@@ -158,13 +158,26 @@ def train(cfg: DictConfig):  # noqa: F821
     optim = torch.optim.Adam(loss_module.parameters(), cfg.train.lr)
 
     # Logging
-    if cfg.logger.backend:
+    if cfg.logger.backend and cfg.logger.backend != "wandb":
         model_name = (
             ("Het" if not cfg.model.shared_parameters else "")
             + ("MA" if cfg.model.centralised_critic else "I")
             + "PPO"
         )
         logger = init_logging(cfg, model_name)
+    else:
+        # Fallback: always create a local TensorBoard logger when wandb is disabled
+        from torchrl.record.loggers import TensorBoardLogger
+        import os
+        from datetime import datetime
+
+        log_dir = os.path.join("runs", f"mappo_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        os.makedirs(log_dir, exist_ok=True)
+        logger = TensorBoardLogger(log_dir=log_dir, name="mappo")
+        print(f"✅ Local logging enabled. Logs saved to: {log_dir}")
+    
+    # Flag to know if we have a real logger
+    has_logger = cfg.logger.backend and cfg.logger.backend != "wandb"
 
     total_time = 0
     total_frames = 0
@@ -257,6 +270,21 @@ def train(cfg: DictConfig):  # noqa: F821
             logger.experiment.log({}, commit=True)
         sampling_start = time.time()
     collector.shutdown()
+    # ==================== SAVE FINAL MODEL ====================
+    checkpoint_dir = "checkpoints"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    checkpoint = {
+        "policy_state_dict": policy.state_dict(),
+        "critic_state_dict": value_module.state_dict(),
+        "optimizer_state_dict": optim.state_dict(),
+        "final_iteration": i,
+        "total_frames": total_frames,
+        "cfg": dict(cfg),   # save config for reproducibility
+    }
+    
+    torch.save(checkpoint, os.path.join(checkpoint_dir, "mappo_final_checkpoint.pt"))
+    print(f"✅ Final model saved to {checkpoint_dir}/mappo_final_checkpoint.pt")
     if not env.is_closed:
         env.close()
     if not env_test.is_closed:
