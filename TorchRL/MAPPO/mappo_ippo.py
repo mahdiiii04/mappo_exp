@@ -157,27 +157,40 @@ def train(cfg: DictConfig):  # noqa: F821
     )
     optim = torch.optim.Adam(loss_module.parameters(), cfg.train.lr)
 
-    # Logging
-    if cfg.logger.backend and cfg.logger.backend != "wandb":
+        # ==================== LOGGING SETUP ====================
+    logger = None
+    has_logger = False
+
+    if cfg.logger.backend and cfg.logger.backend.lower() != "wandb":
         model_name = (
             ("Het" if not cfg.model.shared_parameters else "")
             + ("MA" if cfg.model.centralised_critic else "I")
             + "PPO"
         )
         logger = init_logging(cfg, model_name)
-    else:
-        # Fallback: always create a local TensorBoard logger when wandb is disabled
-        from torchrl.record.loggers import TensorBoardLogger
-        import os
-        from datetime import datetime
+        has_logger = True
+        print(f"✅ Using logger: {cfg.logger.backend}")
 
-        log_dir = os.path.join("runs", f"mappo_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-        os.makedirs(log_dir, exist_ok=True)
-        logger = TensorBoardLogger(log_dir=log_dir, name="mappo")
-        print(f"✅ Local logging enabled. Logs saved to: {log_dir}")
-    
-    # Flag to know if we have a real logger
-    has_logger = cfg.logger.backend and cfg.logger.backend != "wandb"
+    else:
+        # Fallback: Use local TensorBoard logger when wandb is null or disabled
+        try:
+            from torchrl.record.loggers.tensorboard import TensorboardLogger
+            from datetime import datetime
+            import os
+
+            log_dir = os.path.join("runs", f"mappo_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            os.makedirs(log_dir, exist_ok=True)
+
+            logger = TensorboardLogger(
+                exp_name="mappo_experiment",
+                log_dir=log_dir
+            )
+            has_logger = True
+            print(f"✅ Local TensorBoard logging enabled → {log_dir}")
+
+        except Exception as e:
+            print(f"⚠️ Could not create TensorBoard logger: {e}")
+            print("   Logging will be disabled (only console output).")
 
     total_time = 0
     total_frames = 0
