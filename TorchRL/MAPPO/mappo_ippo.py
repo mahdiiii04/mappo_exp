@@ -22,8 +22,8 @@ from torchrl.envs.utils import ExplorationType, set_exploration_type
 from torchrl.modules import ProbabilisticActor, TanhNormal, ValueOperator
 from torchrl.modules.models.multiagent import MultiAgentMLP
 from torchrl.objectives import ClipPPOLoss, ValueEstimators
-from TorchRL.MAPPO.utils.logging import init_logging, log_evaluation, log_training
-from TorchRL.MAPPO.utils.utils import DoneTransform
+from utils.logging import init_logging, log_evaluation, log_training
+from utils.utils import DoneTransform
 
 
 def rendering_callback(env, td):
