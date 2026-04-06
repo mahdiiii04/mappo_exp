@@ -64,7 +64,7 @@ def train(cfg: DictConfig):
     cfg.buffer.memory_size = cfg.collector.frames_per_batch
 
     # initializing logging
-    log_dir = os.path.join("tb_logs", f"{cfg.env.scenario_name}_seed{cfg.seed}")
+    log_dir = os.path.join("tb_logs", f"{cfg.env.scenario_name}-seed-{cfg.seed}")
     writer = SummaryWriter(log_dir=log_dir)
     torchrl_logger.info(f"Tensorboard logging to: {log_dir}")
 
