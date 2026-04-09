@@ -1,9 +1,9 @@
 seed: 0
 
 train:
-  num_epochs: 45
+  num_epochs: 1
   minibatch_size: 4096
-  lr: 5e-5
+  lr: 1e-5
   max_grad_norm: 40.0
   device: ???
 
@@ -30,8 +30,7 @@ buffer:
 loss:
   gamma: 0.9
   lmbda: 0.9
-  entropy_eps: 0
-  clip_epsilon: 0.2
+  entropy_eps: 0.01
 
 eval: 
   frequency: 10

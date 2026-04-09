@@ -4,7 +4,6 @@ import os
 import hydra
 import torch
 from tensordict.nn import TensorDictModule
-from tensordict.nn.distributions import NormalParamExtractor
 from torch import nn
 from torchrl._utils import logger as torchrl_logger
 from torchrl.collectors import Collector
@@ -14,16 +13,15 @@ from torchrl.data.replay_buffers.storages import LazyTensorStorage
 from torchrl.envs import RewardSum, TransformedEnv
 from torchrl.envs.libs.vmas import VmasEnv
 from torchrl.envs.utils import ExplorationType, set_exploration_type
-from torchrl.modules import ProbabilisticActor, TanhNormal, ValueOperator
+from torchrl.modules import ProbabilisticActor, ValueOperator
 from torchrl.modules.models.multiagent import MultiAgentMLP
-from torchrl.objectives import ClipPPOLoss, ValueEstimators
+from torchrl.objectives import A2CLoss, ValueEstimators
 
 from torch.utils.tensorboard import SummaryWriter
 
 from omegaconf import DictConfig
 
 from utils.utils import DoneTransform
-from utils.losses import ClipPPOLoss
 
 def rendering_callback(env, td):
     env.frames.append(env.render(mode="rgb_array", agent_index_focus=None))
@@ -50,7 +48,7 @@ def evaluate_policy(env_test, policy):
     policy.train()
     return mean_episode_reward
 
-@hydra.main(version_base="1.1", config_path="", config_name="mappo")
+@hydra.main(version_base="1.1", config_path="", config_name="maa2c")
 def train(cfg: DictConfig):
     # setting up device
     cfg.train.device = "cpu" if not torch.cuda.is_available() else "cuda:0"
@@ -73,7 +71,7 @@ def train(cfg: DictConfig):
     env = VmasEnv(
         scenario=cfg.env.scenario_name,
         num_envs=cfg.env.num_envs,
-        continuous_actions=True,
+        continuous_actions=False,
         max_steps=cfg.env.max_steps,
         device=cfg.env.device,
         seed=cfg.seed,
@@ -88,7 +86,7 @@ def train(cfg: DictConfig):
     env_test = VmasEnv(
         scenario=cfg.env.scenario_name,
         num_envs=cfg.env.num_envs,
-        continuous_actions=True,
+        continuous_actions=False,
         max_steps=cfg.env.max_steps,
         device=cfg.env.device,
         seed=cfg.seed,
@@ -105,7 +103,7 @@ def train(cfg: DictConfig):
     policy_net = nn.Sequential(
         MultiAgentMLP(
             n_agent_inputs=env.observation_spec["agents", "observation"].shape[-1],
-            n_agent_outputs=2 * env.full_action_spec_unbatched[env.action_key].shape[-1],
+            n_agent_outputs=env.full_action_spec_unbatched[env.action_key].shape[-1],
             n_agents=env.n_agents,
             centralized=False,
             share_params=cfg.model.shared_params,
@@ -114,25 +112,20 @@ def train(cfg: DictConfig):
             num_cells=256,
             activation_class=nn.Tanh,
         ),
-        NormalParamExtractor(),
     )
 
     policy_module = TensorDictModule(
         policy_net,
         in_keys=[("agents", "observation")],
-        out_keys=[("agents", "loc"), ("agents", "scale")],
+        out_keys=[("agents", "logits")],
     )
 
     policy = ProbabilisticActor(
         policy_module,
         spec=env.full_action_spec_unbatched,
-        in_keys=[("agents", "loc"), ("agents", "scale")],
+        in_keys=[("agents", "logits")],
         out_keys=[env.action_key],
-        distribution_class=TanhNormal,
-        distribution_kwargs={
-            "low" : env.full_action_spec_unbatched[("agents", "action")].space.low,
-            "high" : env.full_action_spec_unbatched[("agents", "action")].space.high,
-        },
+        distribution_class=torch.distributions.Categorical,
         return_log_prob=True,
     )
 
@@ -174,12 +167,11 @@ def train(cfg: DictConfig):
 
     # ppo loss 
 
-    loss_module = ClipPPOLoss(
+    loss_module = A2CLoss(
         actor_network=policy,
         critic_network=critic,
-        clip_epsilon=cfg.loss.clip_epsilon,
         entropy_coeff=cfg.loss.entropy_eps,
-        normalize_advantage=False,
+        normalize_advantage=True,
     )
 
     loss_module.set_keys(
