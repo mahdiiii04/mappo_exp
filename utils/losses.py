@@ -40,10 +40,10 @@ class NeuRDLoss(A2CLoss):
         logits = tensordict.get(self.tensor_keys.logits)
         action = tensordict.get(self.tensor_keys.action)
 
-        if action.ndim == 1:  # if dim of action is (batch, 1) keeps as it as, if (batch) unsqueeze it for gather
-            action = action.unsqueeze(1)
+        if action.ndim < logits.ndim:  # if dim of action is (batch, 1) keeps as it as, if (batch) unsqueeze it for gather
+            action = action.unsqueeze(-1)
         
-        action_logits = logits.gather(1, action) # get the logits for the actual chosen actions
+        action_logits = logits.gather(dim=-1, index=action) # get the logits for the actual chosen actions
 
         return action_logits
     

@@ -1,0 +1,31 @@
+seed: 42
+train:
+  num_epochs: 45
+  minibatch_size: 4096
+  lr: 0.001
+  max_grad_norm: 40.0
+  device: ???
+env:
+  max_steps: 100
+  scenario_name: balance
+  scenario:
+    n_agents: 3
+  device: ???
+  num_envs: ??
+model:
+  shared_params: true
+  centralised_critic: true
+collector:
+  frames_per_batch: 60000
+  n_iters: 500
+  total_frames: ???
+buffer:
+  memory_size: ???
+loss:
+  gamma: 0.9
+  lmbda: 0.9
+  entropy_eps: 0
+  clip_epsilon: 0.2
+eval:
+  frequency: 10
+logger: null

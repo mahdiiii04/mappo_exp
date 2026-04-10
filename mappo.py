@@ -219,6 +219,16 @@ def train(cfg: DictConfig):
                 loss_vals = loss_module(subdata)
                 training_tds.append(loss_vals.detach())
 
+                with torch.no_grad():
+                    rewards = subdata.get(("next", env.reward_key))
+                    values = subdata.get("state_value")
+                    advantages = subdata.get("advantage")
+                    logits = subdata.get(("agents", "logits"))
+                    print(f"Reward: mean={rewards.mean().item():.4f}, std={rewards.std().item():.4f}")
+                    print(f"Value: mean={values.mean().item():.4f}, std={values.std().item():.4f}")
+                    print(f"Advantage: mean={advantages.mean().item():.5f}, std={advantages.std().item():.5f}")
+                    print(f"Logit: mean={logits.mean().item():.4f}, std={logits.std().item():.4f}")
+
                 loss_value = (
                     loss_vals["loss_objective"] + loss_vals["loss_critic"] + loss_vals["loss_entropy"]
                 )
