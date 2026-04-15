@@ -1,0 +1,44 @@
+seed: 1
+experiment_name: "rps_run3"
+
+train:
+  num_epochs: 20
+  minibatch_size: 4096
+  lr: 1e-4
+  max_grad_norm: 40.0
+  device: ???
+
+env:
+  max_steps: 100
+  scenario_name: "rock_paper_scissors"
+  scenario:  {}
+  device: ???
+  num_envs: ??
+
+model:
+  shared_params: True
+  centralised_critic: True
+
+collector:
+  frames_per_batch: 51200
+  n_iters: 100
+  total_frames: ???
+
+buffer:
+  memory_size: ???
+
+loss:
+  gamma: 0.99
+  lmbda: 0.9
+  entropy_eps: 0.01
+  clip_epsilon: 0.2
+
+eval: 
+  frequency: 10
+
+logger: {}
+
+hydra:
+  run: 
+    dir: ./outputs/${experiment_name}
+  output_subdir: .hydra
