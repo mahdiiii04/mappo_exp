@@ -69,7 +69,7 @@ class NeuRDLoss(A2CLoss):
 
         if self.entropy_bonus:
             dist = torch.distributions.Categorical(
-                logits=self.tensor_keys.get(self.tensor_keys.logits)
+                logits=tensordict.get(self.tensor_keys.logits).detach()
             )
             entropy = self.get_entropy_bonus(dist)
             td_out.set("entropy", entropy.detach().mean())

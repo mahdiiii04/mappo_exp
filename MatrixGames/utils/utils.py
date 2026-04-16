@@ -79,3 +79,58 @@ def evaluate_policy(env_test, policy):
 
     policy.train()
     return mean_episode_reward
+
+@torch.no_grad()
+def compute_relative_nash_conv(
+    env: MatrixGameEnv,
+    policy,                    
+    device: str | torch.device = None,
+    relative: bool = True,
+) -> tuple[float, torch.Tensor]:
+    if device is None:
+        device = env.device
+
+    td = env.rollout(
+        max_steps=env.max_steps,
+        policy=policy,
+        auto_reset=True,
+        tensordict=None,
+    )
+
+    num_episodes = td.batch_size[0]
+    max_steps = env.max_steps
+    n_agents = env.n_agents
+    n_actions = env.n_actions
+
+    obs = td.get(("agents", "observation"))
+    flat_obs = obs.reshape(-1, n_agents, obs.shape[-1])
+
+    input_td = TensorDict({"agents": {"observation": flat_obs}}, 
+                          batch_size=[flat_obs.shape[0]], device=device)
+    
+    dist = policy.get_dist(input_td)
+    probs = dist.probs.reshape(num_episodes, max_steps, n_agents, n_actions)
+
+    avg_pi = probs.mean(dim=(0, 1))
+
+    payoff = env._payoff.to(device)
+
+    u = torch.zeros(n_agents, device=device)
+    for i in range(n_agents):
+        u[i] = torch.einsum("a,ab,b->", avg_pi[i], payoff[i], avg_pi[1 - i])
+
+    br_0 = (payoff[0] @ avg_pi[1]).max()
+    br_1 = (payoff[1].T @ avg_pi[0]).max()
+
+    raw_nash_conv = (br_0 - u[0] + br_1 - u[1]).item()
+
+    if relative:
+        # Better normalization for biased RPS with factor v
+        v = getattr(env, '_v', 6.0)
+        # Theoretical max exploitability per agent is (v-1), total for both agents is 2*(v-1)
+        max_exploit = 2 * (v - 1)          # <--- This is the key change
+        nash_conv = raw_nash_conv / max_exploit
+    else:
+        nash_conv = raw_nash_conv
+
+    return nash_conv, avg_pi.clone().cpu()

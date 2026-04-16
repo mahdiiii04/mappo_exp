@@ -1,5 +1,5 @@
 seed: 1
-experiment_name: "rps_run3"
+experiment_name: "biased_rps"
 
 train:
   num_epochs: 20
@@ -10,7 +10,7 @@ train:
 
 env:
   max_steps: 100
-  scenario_name: "rock_paper_scissors"
+  scenario_name: "biased_rps"
   scenario:  {}
   device: ???
   num_envs: ??

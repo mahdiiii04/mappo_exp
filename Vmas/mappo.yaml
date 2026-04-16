@@ -1,17 +1,17 @@
 seed: 42
-experiment_name: "stag_hunt_mappo_1"
 
 train:
-  num_epochs: 20
+  num_epochs: 45
   minibatch_size: 4096
-  lr: 1e-4
+  lr: 5e-5
   max_grad_norm: 40.0
   device: ???
 
 env:
-  max_steps: 100
-  scenario_name: "stag_hunt"
-  scenario:  {}
+  max_steps: 1
+  scenario_name: "balance"
+  scenario:
+    n_agents: 3
   device: ???
   num_envs: ??
 
@@ -20,15 +20,15 @@ model:
   centralised_critic: True
 
 collector:
-  frames_per_batch: 51200
-  n_iters: 100
+  frames_per_batch: 60_000
+  n_iters: 500
   total_frames: ???
 
 buffer:
   memory_size: ???
 
 loss:
-  gamma: 0.99
+  gamma: 0.9
   lmbda: 0.9
   entropy_eps: 0
   clip_epsilon: 0.2
@@ -36,9 +36,5 @@ loss:
 eval: 
   frequency: 10
 
-logger: {}
-
-hydra:
-  run: 
-    dir: ./outputs/${experiment_name}
-  output_subdir: .hydra
+logger:
+  

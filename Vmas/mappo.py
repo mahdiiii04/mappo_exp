@@ -3,7 +3,7 @@ import os
 
 import hydra
 import torch
-from tensordict.nn import TensorDictModule, TensorDictSequential
+from tensordict.nn import TensorDictModule
 from torch import nn
 from torchrl._utils import logger as torchrl_logger
 from torchrl.collectors import Collector
@@ -15,14 +15,13 @@ from torchrl.envs.libs.vmas import VmasEnv
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 from torchrl.modules import ProbabilisticActor, ValueOperator
 from torchrl.modules.models.multiagent import MultiAgentMLP
-from torchrl.objectives import ValueEstimators
+from torchrl.objectives import ClipPPOLoss, ValueEstimators
 
 from torch.utils.tensorboard import SummaryWriter
 
 from omegaconf import DictConfig
 
 from utils.utils import DoneTransform
-from utils.losses import NeuRDLoss
 
 def rendering_callback(env, td):
     env.frames.append(env.render(mode="rgb_array", agent_index_focus=None))
@@ -49,7 +48,7 @@ def evaluate_policy(env_test, policy):
     policy.train()
     return mean_episode_reward
 
-@hydra.main(version_base="1.1", config_path="", config_name="neurd")
+@hydra.main(version_base="1.1", config_path="", config_name="mappo")
 def train(cfg: DictConfig):
     # setting up device
     cfg.train.device = "cpu" if not torch.cuda.is_available() else "cuda:0"
@@ -115,15 +114,14 @@ def train(cfg: DictConfig):
         ),
     )
 
-    logits_module = TensorDictModule(
+    policy_module = TensorDictModule(
         policy_net,
         in_keys=[("agents", "observation")],
         out_keys=[("agents", "logits")],
     )
 
-
     policy = ProbabilisticActor(
-        logits_module,
+        policy_module,
         spec=env.full_action_spec_unbatched,
         in_keys=[("agents", "logits")],
         out_keys=[env.action_key],
@@ -167,9 +165,12 @@ def train(cfg: DictConfig):
         batch_size=cfg.train.minibatch_size,
     )
 
-    loss_module = NeuRDLoss(
+    # ppo loss 
+
+    loss_module = ClipPPOLoss(
         actor_network=policy,
         critic_network=critic,
+        clip_epsilon=cfg.loss.clip_epsilon,
         entropy_coeff=cfg.loss.entropy_eps,
         normalize_advantage=False,
     )
@@ -179,7 +180,6 @@ def train(cfg: DictConfig):
         action=env.action_key,
         done=("agents", "done"),
         terminated=("agents", "terminated"),
-        logits=("agents", "logits"),
     )
 
     loss_module.make_value_estimator(
@@ -219,18 +219,8 @@ def train(cfg: DictConfig):
                 loss_vals = loss_module(subdata)
                 training_tds.append(loss_vals.detach())
 
-                """with torch.no_grad():
-                    rewards = subdata.get(("next", env.reward_key))
-                    values = subdata.get("state_value")
-                    advantages = subdata.get("advantage")
-                    logits = subdata.get(("agents", "logits"))
-                    print(f"Reward: mean={rewards.mean().item():.4f}, std={rewards.std().item():.4f}")
-                    print(f"Value: mean={values.mean().item():.4f}, std={values.std().item():.4f}")
-                    print(f"Advantage: mean={advantages.mean().item():.5f}, std={advantages.std().item():.5f}")
-                    print(f"Logit: mean={logits.mean().item():.4f}, std={logits.std().item():.4f}")"""
-
                 loss_value = (
-                    loss_vals["loss_objective"] + loss_vals["loss_critic"]
+                    loss_vals["loss_objective"] + loss_vals["loss_critic"] + loss_vals["loss_entropy"]
                 )
 
                 loss_value.backward()
@@ -256,12 +246,15 @@ def train(cfg: DictConfig):
         #mean_reward = tensordict_data.get(("agents", "episode_reward")).mean().item()
         #mean_episode_reward = tensordict_data.get(("agents", "episode_reward")).sum(-1).mean().item() # per episode
 
+        print(tensordict_data["next", "agents", "episode_reward"])
+
         done = tensordict_data.get(("agents", "done"))
         final_rewards = tensordict_data.get(("agents", "episode_reward"))[done]
         mean_episode_reward = final_rewards.mean().item()
 
         avg_loss_objective = training_tds["loss_objective"].mean().item()
         avg_loss_critic = training_tds["loss_critic"].mean().item()
+        avg_loss_entropy = training_tds["loss_entropy"].mean().item()
         avg_grad_norm = training_tds["grad_norm"].mean().item()
 
         global_step = total_frames
@@ -271,7 +264,8 @@ def train(cfg: DictConfig):
 
         writer.add_scalar("Loss/objective", avg_loss_objective, global_step)
         writer.add_scalar("Loss/critic", avg_loss_critic, global_step)
-        writer.add_scalar("Loss/total", avg_loss_objective + avg_loss_critic, global_step)
+        writer.add_scalar("Loss/entropy", avg_loss_entropy, global_step)
+        writer.add_scalar("Loss/total", avg_loss_objective + avg_loss_critic + avg_loss_entropy, global_step)
 
         writer.add_scalar("Grad/grad_norm", avg_grad_norm, global_step)
         

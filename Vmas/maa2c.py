@@ -15,13 +15,14 @@ from torchrl.envs.libs.vmas import VmasEnv
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 from torchrl.modules import ProbabilisticActor, ValueOperator
 from torchrl.modules.models.multiagent import MultiAgentMLP
-from torchrl.objectives import ClipPPOLoss, ValueEstimators
+from torchrl.objectives import ValueEstimators
 
 from torch.utils.tensorboard import SummaryWriter
 
 from omegaconf import DictConfig
 
 from utils.utils import DoneTransform
+from Vmas.utils.losses.a2c import A2CLoss
 
 def rendering_callback(env, td):
     env.frames.append(env.render(mode="rgb_array", agent_index_focus=None))
@@ -48,7 +49,7 @@ def evaluate_policy(env_test, policy):
     policy.train()
     return mean_episode_reward
 
-@hydra.main(version_base="1.1", config_path="", config_name="mappo")
+@hydra.main(version_base="1.1", config_path="", config_name="maa2c")
 def train(cfg: DictConfig):
     # setting up device
     cfg.train.device = "cpu" if not torch.cuda.is_available() else "cuda:0"
@@ -167,12 +168,11 @@ def train(cfg: DictConfig):
 
     # ppo loss 
 
-    loss_module = ClipPPOLoss(
+    loss_module = A2CLoss(
         actor_network=policy,
         critic_network=critic,
-        clip_epsilon=cfg.loss.clip_epsilon,
         entropy_coeff=cfg.loss.entropy_eps,
-        normalize_advantage=False,
+        normalize_advantage=True,
     )
 
     loss_module.set_keys(
@@ -218,16 +218,6 @@ def train(cfg: DictConfig):
                 subdata = replay_buffer.sample()
                 loss_vals = loss_module(subdata)
                 training_tds.append(loss_vals.detach())
-
-                with torch.no_grad():
-                    rewards = subdata.get(("next", env.reward_key))
-                    values = subdata.get("state_value")
-                    advantages = subdata.get("advantage")
-                    logits = subdata.get(("agents", "logits"))
-                    print(f"Reward: mean={rewards.mean().item():.4f}, std={rewards.std().item():.4f}")
-                    print(f"Value: mean={values.mean().item():.4f}, std={values.std().item():.4f}")
-                    print(f"Advantage: mean={advantages.mean().item():.5f}, std={advantages.std().item():.5f}")
-                    print(f"Logit: mean={logits.mean().item():.4f}, std={logits.std().item():.4f}")
 
                 loss_value = (
                     loss_vals["loss_objective"] + loss_vals["loss_critic"] + loss_vals["loss_entropy"]

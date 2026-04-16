@@ -48,7 +48,7 @@ from torchrl.objectives.value import (
 )
 
 
-class NeuRDLoss(LossModule):
+class A2CLoss(LossModule):
     @dataclass
     class _AcceptedKeys:
         
@@ -382,6 +382,47 @@ class NeuRDLoss(LossModule):
 
         return action_logits
 
+    @dispatch()
+    def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
+        tensordict = tensordict.clone(False)
+        advantage = tensordict.get(self.tensor_keys.advantage, None)
+        if advantage is None:
+            self.value_estimator(
+                tensordict,
+                params=self._cached_detach_critic_network_params,
+                target_params=self.target_critic_network_params,
+            )
+            advantage = tensordict.get(self.tensor_keys.advantage)
+        log_probs, dist = self._log_probs(tensordict)
+
+        action_logits = self._logits(tensordict)
+        loss = -(log_probs * advantage)
+        td_out = TensorDict({"loss_objective": loss}, batch_size=[])
+
+        if self.entropy_bonus:
+            entropy = self.get_entropy_bonus(dist)
+            td_out.set("entropy", entropy.detach().mean())  # for logging
+            td_out.set("loss_entropy", -self.entropy_coeff * entropy)
+        if self.critic_coeff is not None:
+            loss_critic, value_clip_fraction = self.loss_critic(tensordict)
+            td_out.set("loss_critic", loss_critic)
+            if value_clip_fraction is not None:
+                td_out.set("value_clip_fraction", value_clip_fraction)
+        td_out = td_out.named_apply(
+            lambda name, value: _reduce(value, reduction=self.reduction).squeeze(-1)
+            if name.startswith("loss_")
+            else value,
+        )
+        self._clear_weakrefs(
+            tensordict,
+            td_out,
+            "actor_network_params",
+            "critic_network_params",
+            "target_actor_network_params",
+            "target_critic_network_params",
+        )
+        return td_out
+
     def make_value_estimator(self, value_type: ValueEstimators = None, **hyperparams):
         if value_type is None:
             value_type = self.default_value_estimator
@@ -438,71 +479,3 @@ class NeuRDLoss(LossModule):
             "sample_log_prob": self.tensor_keys.sample_log_prob,
         }
         self._value_estimator.set_keys(**tensor_keys)
-
-    @dispatch()
-    def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
-        tensordict = tensordict.clone(False)
-
-        # === Get advantage (make it robust to any shape) ===
-        advantage = tensordict.get(self.tensor_keys.advantage, None)
-        if advantage is None:
-            self.value_estimator(
-                tensordict,
-                params=self._cached_detach_critic_network_params,
-                target_params=self.target_critic_network_params,
-            )
-            advantage = tensordict.get(self.tensor_keys.advantage)
-
-        # Force advantage to shape [B, n_agents, 1]
-        if advantage.ndim == 1:                    # [B]
-            advantage = advantage.unsqueeze(-1)    # → [B, 1]
-        if advantage.ndim == 2:                    # [B, n_agents] or [B, something]
-            if advantage.shape[1] == self.actor_network.n_agents:
-                advantage = advantage.unsqueeze(-1)  # [B, n_agents, 1]
-            else:
-                # fallback if flattened differently
-                advantage = advantage.view(-1, self.actor_network.n_agents, 1)
-
-        # === Get full logits [B, n_agents, n_actions] ===
-        with (
-            self.actor_network_params.to_module(self.actor_network)
-            if self.functional
-            else contextlib.nullcontext()
-        ):
-            td_logits = tensordict.select(*self.actor_network.in_keys, strict=False).copy()
-            logits_td = self.actor_network(td_logits)
-            logits = logits_td.get(("agents", "logits"))   # [B, n_agents, n_actions]
-
-        # === Real NeuRD loss (the one-line change from A2C) ===
-        # logits * advantage broadcasts correctly now
-        loss_objective = -(logits * advantage).sum(dim=-1)   # sum over actions
-
-        td_out = TensorDict({"loss_objective": loss_objective}, batch_size=[])
-
-        if self.entropy_bonus:
-            log_probs, dist = self._log_probs(tensordict)
-            entropy = self.get_entropy_bonus(dist)
-            td_out.set("entropy", entropy.detach().mean())
-            td_out.set("loss_entropy", -self.entropy_coeff * entropy)
-
-        if self.critic_coeff is not None:
-            loss_critic, value_clip_fraction = self.loss_critic(tensordict)
-            td_out.set("loss_critic", loss_critic)
-            if value_clip_fraction is not None:
-                td_out.set("value_clip_fraction", value_clip_fraction)
-
-        td_out = td_out.named_apply(
-            lambda name, value: _reduce(value, reduction=self.reduction).squeeze(-1)
-            if name.startswith("loss_")
-            else value,
-        )
-
-        self._clear_weakrefs(
-            tensordict,
-            td_out,
-            "actor_network_params",
-            "critic_network_params",
-            "target_actor_network_params",
-            "target_critic_network_params",
-        )
-        return td_out
