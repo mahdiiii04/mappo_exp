@@ -1,5 +1,5 @@
-seed: 19
-experiment_name: "biased_rps"
+seed: 42
+experiment_name: "static_biased_rps"
 
 train:
   num_epochs: 20
@@ -9,8 +9,8 @@ train:
   device: ???
 
 env:
-  max_steps: 100
-  scenario_name: "biased_rps"
+  max_steps: 1
+  scenario_name: "static_biased_rps"
   scenario:  {}
   device: ???
   num_envs: ??

@@ -1,11 +1,13 @@
 seed: 42
 experiment_name: rock_paper_scissors_2
 train:
-  num_epochs: 20
+  num_epochs: 10
   minibatch_size: 4096
-  lr: 0.0001
+  actor_lr: 0.0001
+  critic_lr: 0.001
   max_grad_norm: 40.0
   device: ???
+  tau: 0.05
 env:
   max_steps: 100
   scenario_name: rock_paper_scissors
@@ -13,8 +15,8 @@ env:
   device: ???
   num_envs: ??
 model:
-  shared_params: true
-  centralised_critic: true
+  shared_params: false
+  centralised_critic: false
 collector:
   frames_per_batch: 51200
   n_iters: 100
@@ -22,10 +24,9 @@ collector:
 buffer:
   memory_size: ???
 loss:
-  gamma: 0.99
-  lmbda: 0.9
   entropy_eps: 0.1
-  clip_epsilon: 0.2
+  alpha: 0.1
+  gamma: 0.0
 eval:
   frequency: 10
 logger: {}

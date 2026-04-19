@@ -243,6 +243,7 @@ def train(cfg: DictConfig):
         global_step = total_frames
 
         nash, avg_policy = compute_nash_conv(env, policy)
+        print(avg_policy)
         policy_history.append((global_step, avg_policy))
 
         for agent in range(env.n_agents):

@@ -1,5 +1,5 @@
 seed: 42
-experiment_name: stag_hunt_mappo_1
+experiment_name: static_biased_rps
 train:
   num_epochs: 20
   minibatch_size: 4096
@@ -7,14 +7,14 @@ train:
   max_grad_norm: 40.0
   device: ???
 env:
-  max_steps: 100
+  max_steps: 1
   scenario_name: static_biased_rps
   scenario: {}
   device: ???
   num_envs: ??
 model:
-  shared_params: false
-  centralised_critic: false
+  shared_params: true
+  centralised_critic: true
 collector:
   frames_per_batch: 51200
   n_iters: 100
@@ -24,7 +24,7 @@ buffer:
 loss:
   gamma: 0.99
   lmbda: 0.9
-  entropy_eps: 0
+  entropy_eps: 0.01
   clip_epsilon: 0.2
 eval:
   frequency: 10

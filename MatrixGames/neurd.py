@@ -242,6 +242,7 @@ def train(cfg: DictConfig):
         global_step = total_frames
 
         nash, avg_policy = compute_nash_conv(env, policy)
+        print(avg_policy)
         policy_history.append((global_step, avg_policy))
 
         for agent in range(env.n_agents):
@@ -274,8 +275,6 @@ def train(cfg: DictConfig):
             f"Objective Loss {avg_loss_objective:.4f} | "
             f"Critic Loss {avg_loss_critic:.4f} | "
             f"Nash Conv {nash:.4f} | "
-            f"Agent 0 Policy {avg_policy[0]} |"
-            f"Agent 1 Policy {avg_policy[1]}"
         )
 
         if i % eval_freq == 0 or i == cfg.collector.n_iters - 1:
@@ -293,7 +292,7 @@ def train(cfg: DictConfig):
     steps = np.array([step for step, _ in policy_history])
     policies = np.stack([p.numpy() for step, p in policy_history])
 
-    traj_path = f"policy_trajectory_{cfg.env.scenario_name}_seed{cfg.seed}.npy"
+    traj_path = f"policy_trajectory_{cfg.env.scenario_name}_seed{cfg.seed}_NeuRD.npy"
     np.save(traj_path, {
         "steps": steps,
         "policies": policies,

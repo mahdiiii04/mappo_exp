@@ -74,6 +74,7 @@ class DeepERIDLoss(LossModule):
         if functional:
             self.convert_to_functional(actor_network, "actor_network")
             self.convert_to_functional(critic_network, "critic_network")
+            self.target_critic_network_params = deepcopy(self.critic_network_params)
         else:
             self.actor_network = actor_network
             self.critic_network = critic_network
@@ -108,7 +109,7 @@ class DeepERIDLoss(LossModule):
 
     @property
     def functional(self):
-        return self._functional   # FIX: was "return self.functional" → infinite recursion
+        return self._functional   
 
     @property
     def in_keys(self):
@@ -120,7 +121,7 @@ class DeepERIDLoss(LossModule):
             *self.actor_network.in_keys,
             *[("next", key) for key in self.actor_network.in_keys],
             *self.critic_network.in_keys,
-            *[("next", key) for key in self.critic_network.in_keys],  # FIX: missing * unpack
+            *[("next", key) for key in self.critic_network.in_keys],  
         ]
         return list(set(keys))
 
@@ -142,6 +143,18 @@ class DeepERIDLoss(LossModule):
             log_prob = dist.log_prob(x)
             entropy = -log_prob.mean(0)
         return entropy.unsqueeze(-1)
+    
+    def soft_update_target(
+            self, tau: float = 0.005
+    ) -> None:
+        if not self.functional or self.target_critic_network_params is None:
+            return
+        with torch.no_grad():
+            for p_live, p_target in zip(
+                self.critic_network_params.values(True, True),
+                self.target_critic_network_params.values(True, True),
+            ):
+                p_target.data.lerp_(p_live.data, tau)
     
     def _get_action_probs(
             self, tensordict: TensorDictBase
@@ -173,13 +186,33 @@ class DeepERIDLoss(LossModule):
         q_values = q_out.get("q_value")  # (batch, n_actions)
         return q_values
     
+    def compute_td_error(self, tensordict: TensorDictBase) -> torch.Tensor:
+        with torch.no_grad():
+            q_vals = self._get_q_values(tensordict, use_target=False)
+            next_td = tensordict.get("next")
+            next_q = self._get_q_values(next_td, use_target=True)
+            pi_next = self._get_action_probs(next_td)
+            v_next = (pi_next * next_q).sum(dim=-1, keepdim=True)
+            reward = next_td.get(self.tensor_keys.reward)
+            done = next_td.get(self.tensor_keys.done).float()
+            target_q = reward + self.gamma * (1.0 - done) * v_next
+
+            action = tensordict.get(self.tensor_keys.action)
+            if action.ndim > 1:
+                action = action.squeeze(-1)
+            q_selected = q_vals.gather(-1, action.unsqueeze(-1))
+            td_error = (target_q - q_selected).abs().mean().item()
+        return td_error
+    
     def _policy_update(
             self, pi: torch.Tensor, q: torch.Tensor
     ) -> torch.Tensor:
-        q_i = q.unsqueeze(-1)   # (batch, n_actions, 1)
-        q_j = q.unsqueeze(-2)   # (batch, 1, n_actions)
+        
+        q_centered = q - q.mean(dim=-1, keepdim=True)
+        
+        q_i = q_centered.unsqueeze(-1)   # (batch, n_actions, 1)
+        q_j = q_centered.unsqueeze(-2)   # (batch, 1, n_actions)
 
-        # R[b, i, j] = [Q_i - Q_j]_+  (advantage of i over j)
         R = torch.clamp(q_i - q_j, min=0.0)  # (batch, n_actions, n_actions)
 
         # Inflow to i: agents on j switch to i when i is better
@@ -188,7 +221,7 @@ class DeepERIDLoss(LossModule):
 
         # Outflow from i: agents on i switch to j when j is better
         # = π[i] * Σ_j R[b, j, i]
-        term2 = pi * torch.sum(R, dim=-2)            # FIX: was dim=-1
+        term2 = pi * torch.sum(R, dim=-2)          
 
         pi_prime = pi + self.alpha * (term1 - term2)
 
@@ -206,32 +239,35 @@ class DeepERIDLoss(LossModule):
         eps = 1e-8
         pi       = torch.clamp(pi,       min=eps)
         pi_prime = torch.clamp(pi_prime, min=eps)
-        kl = (pi_prime * (pi_prime.log() - pi.log())).sum(dim=-1)  # FIX
+        kl = (pi_prime * (pi_prime.log() - pi.log())).sum(dim=-1)  
         return kl.unsqueeze(-1)
 
     def loss_critic(
             self, tensordict: TensorDictBase
     ) -> torch.Tensor:
         q_vals = self._get_q_values(tensordict, use_target=False)
- 
         next_tensordict = tensordict.get("next")
  
         with torch.no_grad():
-            # FIX: use target network for stable TD bootstrapping
             next_q_vals = self._get_q_values(next_tensordict, use_target=True)
+            
+            pi_next = self._get_action_probs(next_tensordict)
+
+            v_next = (pi_next * next_q_vals).sum(dim=-1, keepdim=True)
+
             reward = next_tensordict.get(self.tensor_keys.reward)
-            done   = next_tensordict.get(self.tensor_keys.done).float()
-            target_q = reward + self.gamma * (1.0 - done) * next_q_vals.max(dim=-1, keepdim=True).values
+            done = next_tensordict.get(self.tensor_keys.done).float()
+
+            target_q = reward + self.gamma * (1.0 - done) * v_next
  
         action = tensordict.get(self.tensor_keys.action)
         if action.ndim > 1:
             action = action.squeeze(-1)
-        # FIX: keep shape (batch, 1) to match target_q — don't squeeze
         q_selected = q_vals.gather(-1, action.unsqueeze(-1))  # (batch, 1)
  
         loss = distance_loss(target_q, q_selected, loss_function=self.loss_critic_type)
         return loss.mean() if self.reduction == "mean" else loss
-    
+
     @dispatch
     def forward(
         self, tensordict: TensorDictBase
@@ -242,8 +278,9 @@ class DeepERIDLoss(LossModule):
         pi = self._get_action_probs(tensordict)
 
         q_vals = self._get_q_values(tensordict)
-
-        pi_prime = self._policy_update(pi, q_vals)
+        
+        with torch.no_grad():
+            pi_prime = self._policy_update(pi, q_vals)
 
         loss_kl = self._kl_divergence(pi_prime, pi)
 

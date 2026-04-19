@@ -149,6 +149,8 @@ def train(cfg: DictConfig):
         actor_network=policy,
         critic_network=critic,
         entropy_coeff=cfg.loss.entropy_eps,
+        alpha=cfg.loss.alpha,
+        gamma=cfg.loss.gamma,
     )
 
     loss_module.set_keys(
@@ -159,7 +161,15 @@ def train(cfg: DictConfig):
         sample_log_prob=("agents", "action_log_prob"),
     )
 
-    optim = torch.optim.Adam(params=loss_module.parameters(), lr=cfg.train.lr)
+    if loss_module.functional:
+        actor_params = list(loss_module.actor_network_params.values(True, True))
+        critic_params = list(loss_module.critic_network_params.values(True, True))
+    else:
+        actor_params = list(loss_module.actor_network.parameters())
+        critic_params = list(loss_module.critic_network.parameters())
+
+    actor_optim = torch.optim.Adam(actor_params, lr=cfg.train.actor_lr)
+    critic_optim = torch.optim.Adam(critic_params, lr=cfg.train.critic_lr)
 
     # training loop 
 
@@ -189,19 +199,28 @@ def train(cfg: DictConfig):
                 loss_vals = loss_module(subdata)
                 training_tds.append(loss_vals.detach())
 
-                loss_value = (
-                    loss_vals["loss_objective"] + loss_vals["loss_critic"] #+ loss_vals["loss_entropy"]
-                )
+                # --- Critic Step ---
+                critic_optim.zero_grad()
+                loss_vals["loss_critic"].backward(retain_graph=True)
+                torch.nn.utils.clip_grad_norm_(critic_params, cfg.train.max_grad_norm)
+                critic_optim.step()
 
-                loss_value.backward()
+                # --- Actor Step ---
+                actor_optim.zero_grad()
+                actor_loss = loss_vals["loss_objective"] + loss_vals["loss_entropy"]
+                actor_loss.backward()
+                torch.nn.utils.clip_grad_norm_(actor_params, cfg.train.max_grad_norm)
+                actor_optim.step()
 
-                total_norm = torch.nn.utils.clip_grad_norm_(
-                    loss_module.parameters(), cfg.train.max_grad_norm
-                )
-                training_tds[-1].set("grad_norm", total_norm.mean())
+                loss_module.soft_update_target(tau=cfg.train.tau)
 
-                optim.step()
-                optim.zero_grad()
+                total_norm = sum(
+                    p.grad.norm().item() ** 2
+                    for p in actor_params + critic_params
+                    if p.grad is not None
+                ) ** 0.5
+
+                training_tds[-1].set("grad_norm", torch.tensor(total_norm, device=cfg.train.device))
 
         
         collector.update_policy_weights_()
@@ -212,9 +231,20 @@ def train(cfg: DictConfig):
         total_time += iteration_time
         training_tds = torch.stack(training_tds)
 
-        # logging
-        #mean_reward = tensordict_data.get(("agents", "episode_reward")).mean().item()
-        #mean_episode_reward = tensordict_data.get(("agents", "episode_reward")).sum(-1).mean().item() # per episode
+        with torch.no_grad()        :
+            sample_td = env.reset()
+            q_values = loss_module._get_q_values(sample_td, use_target=False)
+            q_target = loss_module._get_q_values(sample_td, use_target=True)
+
+            print(f"Q values: {q_values[0]}")
+            print(f"Q Target: {q_target[0]}")
+
+            q_std_mean = q_values.std(dim=-1).mean().item()
+            q_mean = q_values.mean().item()
+            q_std_all = q_values.std().item()
+
+            q_range = (q_values.max(dim=-1).values - q_values.min(dim=-1).values).mean().item()
+
 
         episode_r = tensordict_data.get(("next", "agents", "episode_reward"))
         episode_r = episode_r.reshape(
@@ -225,13 +255,13 @@ def train(cfg: DictConfig):
 
         avg_loss_objective = training_tds["loss_objective"].mean().item()
         avg_loss_critic = training_tds["loss_critic"].mean().item()
-        #avg_loss_entropy = training_tds["loss_entropy"].mean().item()
+        avg_loss_entropy = training_tds["loss_entropy"].mean().item()
         avg_grad_norm = training_tds["grad_norm"].mean().item()
 
         global_step = total_frames
 
         nash, avg_policy = compute_nash_conv(env, policy)
-        print(avg_policy)
+        print(f" Average Policy: {avg_policy}")
         policy_history.append((global_step, avg_policy))
 
         for agent in range(env.n_agents):
@@ -240,14 +270,18 @@ def train(cfg: DictConfig):
                 writer.add_scalar(f"Policy/agent{agent}_action{action}", prob, global_step)
 
         writer.add_scalar("Reward/mean_episode_reward", mean_episode_reward, global_step)
-        #writer.add_scalar("Reward/mean_agent_reward", mean_reward, global_step)
 
         writer.add_scalar("Loss/objective", avg_loss_objective, global_step)
         writer.add_scalar("Loss/critic", avg_loss_critic, global_step)
-        #writer.add_scalar("Loss/entropy", avg_loss_entropy, global_step)
+        writer.add_scalar("Loss/entropy", avg_loss_entropy, global_step)
         writer.add_scalar("Loss/total", avg_loss_objective + avg_loss_critic, global_step)
 
         writer.add_scalar("Grad/grad_norm", avg_grad_norm, global_step)
+
+        writer.add_scalar("Critic/Q_std", q_std_mean, global_step)
+        writer.add_scalar("Critic/q_mean", q_mean, global_step)
+        writer.add_scalar("Critic/q_std_all", q_std_all, global_step)
+        writer.add_scalar("Critic/q_range", q_range, global_step)
         
         writer.add_scalar("Time/sampling_time", sampling_time, global_step)
         writer.add_scalar("Time/training_time", training_time, global_step)
@@ -263,6 +297,9 @@ def train(cfg: DictConfig):
             f"Mean Ep Reward {mean_episode_reward:.3f} | "
             f"Objective Loss {avg_loss_objective:.4f} | "
             f"Critic Loss {avg_loss_critic:.4f} | "
+            f"Q Std Mean {q_std_mean:.4f} | "
+            f"Q Mean {q_mean:.4f} | "
+            f"Q Range {q_range:.4f} | "
             f"Nash Conv {nash:.4f}"
         )
 
@@ -300,6 +337,5 @@ def train(cfg: DictConfig):
 
 if __name__ == "__main__":
     train()
-
 
 

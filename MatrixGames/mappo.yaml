@@ -10,14 +10,14 @@ train:
 
 env:
   max_steps: 100
-  scenario_name: "stag_hunt"
+  scenario_name: "static_biased_rps"
   scenario:  {}
   device: ???
   num_envs: ??
 
 model:
-  shared_params: True
-  centralised_critic: True
+  shared_params: False
+  centralised_critic: False
 
 collector:
   frames_per_batch: 51200

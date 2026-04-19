@@ -457,6 +457,27 @@ class BiasedRPSEnv(MatrixGameEnv):
         td = super()._reset(tensordict)
 
         return td
+    
+class StaticBiasedRPSEnv(MatrixGameEnv):
+    """
+    A static version of baised rps.
+
+    only rock paper interaction is amplified
+    """
+    n_agents = 2
+    n_actions = 3
+
+    def _build_payoff(self, **_) -> torch.Tensor:
+        
+        outcome = torch.tensor(
+            [
+                [0., -2., 1.],
+                [2., 0., -1.],
+                [-1., 1., 0.],
+            ], dtype=torch.float32,
+        )
+
+        return torch.stack([outcome, -outcome], dim=0)
 
 #################### Registry ###################
 
@@ -466,6 +487,7 @@ _REGISTRY: dict[str, type[MatrixGameEnv]] = {
     "stag_hunt": StagHuntEnv,
     "battle_of_sexes": BattleOfSexesEnv,
     "biased_rps": BiasedRPSEnv,
+    "static_biased_rps": StaticBiasedRPSEnv,
 }
 
 
