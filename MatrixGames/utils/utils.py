@@ -1,5 +1,7 @@
 import torch
 
+import numpy as np
+
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 from tensordict import TensorDict
 
@@ -134,3 +136,69 @@ def compute_relative_nash_conv(
         nash_conv = raw_nash_conv
 
     return nash_conv, avg_pi.clone().cpu()
+
+def evaluate_policy_tabular(env_test, policy, n_episodes=10):
+    """Evaluate tabular policy over several episodes."""
+    total_rewards = []
+    for _ in range(n_episodes):
+        td = env_test.reset()
+        done = False
+        ep_reward = 0
+        while not done:
+            with torch.no_grad():
+                actions = policy(td)  # one‑hot
+                td = env_test.step(td.set(("agents", "action"), actions))
+            reward = td.get(("next", "agents", "reward")).sum().item()  # sum over agents
+            ep_reward += reward
+            done = td.get(("next", "agents", "done")).all().item()
+        total_rewards.append(ep_reward)
+    return np.mean(total_rewards)
+
+def compute_nash_conv_tabular(env, policy_probs):
+    """
+    Compute NashConv for a tabular policy in a 2‑player matrix game.
+    
+    Args:
+        env: MatrixGameEnv instance (must have n_agents==2)
+        policy_probs: torch.Tensor of shape (n_agents, n_actions)
+    
+    Returns:
+        nash_conv (float), policy_probs (numpy array)
+    """
+    n_agents = env.n_agents
+    n_actions = env.n_actions
+    payoff = env._payoff  # shape (n_agents, n_actions, n_actions)
+
+    # Current expected payoff for each agent
+    current_values = torch.zeros(n_agents, device=policy_probs.device)
+    for agent in range(n_agents):
+        other = 1 - agent
+        for a in range(n_actions):
+            p_a = policy_probs[agent, a]
+            for o in range(n_actions):
+                p_o = policy_probs[other, o]
+                if agent == 0:
+                    r = payoff[agent, a, o]
+                else:
+                    r = payoff[agent, o, a]
+                current_values[agent] += p_a * p_o * r
+
+    # Best response payoff for each agent
+    best_response_values = torch.zeros(n_agents, device=policy_probs.device)
+    for agent in range(n_agents):
+        other = 1 - agent
+        best = -float('inf')
+        for a in range(n_actions):
+            expected = 0.0
+            for o in range(n_actions):
+                p_o = policy_probs[other, o]
+                if agent == 0:
+                    r = payoff[agent, a, o]
+                else:
+                    r = payoff[agent, o, a]
+                expected += p_o * r
+            best = max(best, expected)
+        best_response_values[agent] = best
+
+    nash_conv = (best_response_values - current_values).sum().item()
+    return nash_conv, policy_probs.cpu().numpy()

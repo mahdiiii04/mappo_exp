@@ -175,6 +175,11 @@ class MatrixGameEnv(EnvBase):
         joint_oh = actions_oh.reshape(ne, -1)
         obs_next = joint_oh[:, None, :].expand(ne, self.n_agents, -1).clone()
 
+        obs_next = torch.zeros(
+            ne, self.n_agents, joint_oh.shape[-1],
+            device=dev, dtype=torch.float32
+        )
+
         return TensorDict(
             {
                 "agents": TensorDict(
@@ -471,8 +476,8 @@ class StaticBiasedRPSEnv(MatrixGameEnv):
         
         outcome = torch.tensor(
             [
-                [0., -2., 1.],
-                [2., 0., -1.],
+                [0., -10., 1.],
+                [10., 0., -1.],
                 [-1., 1., 0.],
             ], dtype=torch.float32,
         )
