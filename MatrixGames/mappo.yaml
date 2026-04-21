@@ -1,5 +1,5 @@
 seed: 42
-experiment_name: "stag_hunt_mappo_1"
+experiment_name: "BiasedRPS"
 
 train:
   num_epochs: 20
@@ -10,14 +10,14 @@ train:
 
 env:
   max_steps: 100
-  scenario_name: "static_biased_rps"
+  scenario_name: "biased_rps"
   scenario:  {}
   device: ???
   num_envs: ??
 
 model:
-  shared_params: False
-  centralised_critic: False
+  shared_params: True
+  centralised_critic: True
 
 collector:
   frames_per_batch: 51200

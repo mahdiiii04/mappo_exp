@@ -416,8 +416,13 @@ class BiasedRPSEnv(MatrixGameEnv):
     ):
         self._v = v
         self._phase_length = phase_length
-        self._current_phase = 0
+
         super().__init__(**kwargs)
+
+        self.register_buffer(
+             "_current_phase",
+             torch.zeros(self._num_envs, dtype=torch.long, device=self.device),
+        )
 
         self.register_buffer(
             "_total_steps",
@@ -427,7 +432,10 @@ class BiasedRPSEnv(MatrixGameEnv):
     def _build_payoff(self, **_) -> torch.Tensor:
 
         v = self._v
-        phase = self._current_phase
+        if hasattr(self, '_current_phase'):
+            phase = int(self._current_phase[0].item())
+        else:
+            phase = 0
 
         outcome = torch.tensor([
             [ 0., -1.,  1.],   # Rock
@@ -446,20 +454,32 @@ class BiasedRPSEnv(MatrixGameEnv):
             outcome[0, 2] = v
 
         return torch.stack([outcome, -outcome], dim=0)
-
-    def _step(self, tensordict: TensorDict):
-        self._total_steps.add_(1)
-        
-        td = super()._step(tensordict)
-
-        if (self._total_steps[0] % self._phase_length == 0) and (self._total_steps[0] > 0):
-            self._current_phase = (self._current_phase + 1) % 3
-            self._payoff = self._build_payoff().to(self.device)
-
-        return td
     
     def _reset(self, tensordict=None):
         td = super()._reset(tensordict)
+         # expose current phase (same for all envs) + flag (always False on reset)
+        td.set("phase", self._current_phase.clone())
+        td.set(
+            "phase_changed",
+            torch.zeros(self._num_envs, dtype=torch.bool, device=self.device),
+        )
+        return td
+
+    def _step(self, tensordict: TensorDict):
+        self._total_steps.add_(1)
+        old_phase = self._current_phase.clone()
+
+        td = super()._step(tensordict)
+
+        phase_changed = torch.zeros(self._num_envs, dtype=torch.bool, device=self.device)
+        if (self._total_steps[0] % self._phase_length == 0) and (self._total_steps[0] > 0):
+            self._current_phase.add_(1)
+            self._current_phase %= 3
+            self._payoff = self._build_payoff().to(self.device)
+            phase_changed = (self._current_phase != old_phase)
+
+        td.set("phase", self._current_phase.clone())
+        td.set("phase_changed", phase_changed)
 
         return td
     

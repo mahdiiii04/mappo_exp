@@ -44,7 +44,7 @@ def train(cfg: DictConfig):
     cfg.buffer.memory_size = cfg.collector.frames_per_batch
 
     # initializing logging
-    log_dir = os.path.join("tb_logs", f"{cfg.env.scenario_name}-seed-{cfg.seed}")
+    log_dir = os.path.join("tb_logs", "DeepERID")
     writer = SummaryWriter(log_dir=log_dir)
     torchrl_logger.info(f"Tensorboard logging to: {log_dir}")
 
@@ -151,6 +151,7 @@ def train(cfg: DictConfig):
         entropy_coeff=cfg.loss.entropy_eps,
         alpha=cfg.loss.alpha,
         gamma=cfg.loss.gamma,
+        avg_actor_tau=cfg.train.actor_tau,
     )
 
     loss_module.set_keys(
@@ -222,7 +223,7 @@ def train(cfg: DictConfig):
 
                 training_tds[-1].set("grad_norm", torch.tensor(total_norm, device=cfg.train.device))
 
-        
+        loss_module.soft_update_avg_actor(cfg.train.actor_tau)
         collector.update_policy_weights_()
 
         training_time = time.time() - training_start
@@ -337,5 +338,4 @@ def train(cfg: DictConfig):
 
 if __name__ == "__main__":
     train()
-
 

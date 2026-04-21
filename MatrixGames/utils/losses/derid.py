@@ -67,6 +67,7 @@ class DeepERIDLoss(LossModule):
             gamma: float = 0.99,
             reduction: str = "mean",
             functional: bool = True,
+            avg_actor_tau: float = 0.02,
     ):
         self._functional = functional  
         super().__init__()
@@ -75,10 +76,14 @@ class DeepERIDLoss(LossModule):
             self.convert_to_functional(actor_network, "actor_network")
             self.convert_to_functional(critic_network, "critic_network")
             self.target_critic_network_params = deepcopy(self.critic_network_params)
+            self.avg_actor_network_params = deepcopy(self.actor_network_params)
         else:
             self.actor_network = actor_network
             self.critic_network = critic_network
             self.target_critic_network_params = None
+            self.avg_actor_network_params = None
+
+        self.avg_actor_tau = avg_actor_tau
 
         self.samples_mc_entropy = samples_mc_entropy
         self.entropy_bonus = entropy_bonus
@@ -155,15 +160,35 @@ class DeepERIDLoss(LossModule):
                 self.target_critic_network_params.values(True, True),
             ):
                 p_target.data.lerp_(p_live.data, tau)
+
+    def soft_update_avg_actor(
+            self, tau: float | None = None
+    ) -> None:
+        if not self.functional or self.avg_actor_network_params is None:
+            return
+        if tau is None:
+            tau = self.avg_actor_tau
+        with torch.no_grad():
+            for p_live, p_avg in zip(
+                self.actor_network_params.values(True, True),
+                self.avg_actor_network_params.values(True, True),
+            ):
+                p_avg.data.lerp_(p_live, tau)
     
     def _get_action_probs(
-            self, tensordict: TensorDictBase
+            self, tensordict: TensorDictBase, use_avg: bool = False
     ) -> torch.Tensor:
-        with (
-            self.actor_network_params.to_module(self.actor_network)
-            if self.functional
-            else contextlib.nullcontext()
-        ):
+        
+        if self.functional:
+            if use_avg and self.avg_actor_network_params is not None:
+                params = self.avg_actor_network_params
+            else:
+                params = self.actor_network_params
+            ctxt = params.to_module(self.actor_network)
+        else:
+            ctxt = contextlib.nullcontext()
+
+        with ctxt:
             dist = self.actor_network.get_dist(tensordict)
         
         if isinstance(dist, CompositeDistribution):
@@ -185,24 +210,6 @@ class DeepERIDLoss(LossModule):
 
         q_values = q_out.get("q_value")  # (batch, n_actions)
         return q_values
-    
-    def compute_td_error(self, tensordict: TensorDictBase) -> torch.Tensor:
-        with torch.no_grad():
-            q_vals = self._get_q_values(tensordict, use_target=False)
-            next_td = tensordict.get("next")
-            next_q = self._get_q_values(next_td, use_target=True)
-            pi_next = self._get_action_probs(next_td)
-            v_next = (pi_next * next_q).sum(dim=-1, keepdim=True)
-            reward = next_td.get(self.tensor_keys.reward)
-            done = next_td.get(self.tensor_keys.done).float()
-            target_q = reward + self.gamma * (1.0 - done) * v_next
-
-            action = tensordict.get(self.tensor_keys.action)
-            if action.ndim > 1:
-                action = action.squeeze(-1)
-            q_selected = q_vals.gather(-1, action.unsqueeze(-1))
-            td_error = (target_q - q_selected).abs().mean().item()
-        return td_error
     
     def _policy_update(
             self, pi: torch.Tensor, q: torch.Tensor
@@ -251,7 +258,7 @@ class DeepERIDLoss(LossModule):
         with torch.no_grad():
             next_q_vals = self._get_q_values(next_tensordict, use_target=True)
             
-            pi_next = self._get_action_probs(next_tensordict)
+            pi_next = self._get_action_probs(next_tensordict, use_avg=True)
 
             v_next = (pi_next * next_q_vals).sum(dim=-1, keepdim=True)
 

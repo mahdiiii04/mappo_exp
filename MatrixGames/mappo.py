@@ -43,7 +43,7 @@ def train(cfg: DictConfig):
     cfg.buffer.memory_size = cfg.collector.frames_per_batch
 
     # initializing logging
-    log_dir = os.path.join("tb_logs", f"{cfg.env.scenario_name}-seed-{cfg.seed}")
+    log_dir = os.path.join("tb_logs", f"MAPPO")
     writer = SummaryWriter(log_dir=log_dir)
     torchrl_logger.info(f"Tensorboard logging to: {log_dir}")
 
@@ -245,6 +245,18 @@ def train(cfg: DictConfig):
         nash, avg_policy = compute_nash_conv(env, policy)
         print(avg_policy)
         policy_history.append((global_step, avg_policy))
+
+        print(env._payoff)
+        if cfg.env.scenario_name == "biased_rps":
+            current_phase = env._current_phase[0].item()
+            writer.add_scalar("Env/current_phase", current_phase, global_step)
+
+            if not hasattr(train, "_prev_phase"):
+                train._prev_phase = current_phase
+            elif current_phase != train._prev_phase:
+                writer.add_scalar("Nash/Nash_Conv_phase_change", nash, global_step)
+                torchrl_logger.info(f"PHASE CHANGE at iteration {i} | Nash Conv {nash:.4f}")
+                train._prev_phase = current_phase
 
         for agent in range(env.n_agents):
             for action in range(env.n_actions):

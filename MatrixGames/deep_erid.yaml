@@ -8,11 +8,12 @@ train:
   critic_lr: 1e-3
   max_grad_norm: 40.0
   device: ???
-  tau: 0.05
+  tau: 0.005
+  actor_tau: 0.02
 
 env:
   max_steps: 100
-  scenario_name: "static_biased_rps"
+  scenario_name: "biased_rps"
   scenario: {} 
   device: ???
   num_envs: ??
@@ -31,7 +32,7 @@ buffer:
 
 loss:
   entropy_eps: 0.01
-  alpha: 0.01
+  alpha: 0.1
   gamma: 0.9
 
 eval: 
