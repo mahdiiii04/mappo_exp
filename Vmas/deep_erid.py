@@ -259,8 +259,6 @@ def train(cfg: DictConfig):
         #mean_reward = tensordict_data.get(("agents", "episode_reward")).mean().item()
         #mean_episode_reward = tensordict_data.get(("agents", "episode_reward")).sum(-1).mean().item() # per episode
 
-        print(tensordict_data["next", "agents", "episode_reward"])
-
         done = tensordict_data.get(("agents", "done"))
         final_rewards = tensordict_data.get(("agents", "episode_reward"))[done]
         mean_episode_reward = final_rewards.mean().item()
