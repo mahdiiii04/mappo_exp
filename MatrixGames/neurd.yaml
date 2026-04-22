@@ -1,16 +1,17 @@
 seed: 42
-experiment_name: "static_biased_rps"
+experiment_name: "BiasedRPS"
+sub_exp: "NeuRD"
 
 train:
-  num_epochs: 20
+  num_epochs: 10
   minibatch_size: 4096
   lr: 1e-4
   max_grad_norm: 40.0
   device: ???
 
 env:
-  max_steps: 1
-  scenario_name: "static_biased_rps"
+  max_steps: 100
+  scenario_name: "biased_rps"
   scenario:  {}
   device: ???
   num_envs: ??
@@ -30,7 +31,7 @@ buffer:
 loss:
   gamma: 0.99
   lmbda: 0.9
-  entropy_eps: 0.01
+  entropy_eps: 0.1
   clip_epsilon: 0.2
 
 eval: 

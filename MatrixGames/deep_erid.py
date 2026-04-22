@@ -44,7 +44,7 @@ def train(cfg: DictConfig):
     cfg.buffer.memory_size = cfg.collector.frames_per_batch
 
     # initializing logging
-    log_dir = os.path.join("tb_logs", "DeepERID")
+    log_dir = os.path.join("tb_logs", cfg.sub_exp)
     writer = SummaryWriter(log_dir=log_dir)
     torchrl_logger.info(f"Tensorboard logging to: {log_dir}")
 
@@ -151,7 +151,6 @@ def train(cfg: DictConfig):
         entropy_coeff=cfg.loss.entropy_eps,
         alpha=cfg.loss.alpha,
         gamma=cfg.loss.gamma,
-        avg_actor_tau=cfg.train.actor_tau,
     )
 
     loss_module.set_keys(
@@ -223,7 +222,8 @@ def train(cfg: DictConfig):
 
                 training_tds[-1].set("grad_norm", torch.tensor(total_norm, device=cfg.train.device))
 
-        loss_module.soft_update_avg_actor(cfg.train.actor_tau)
+        loss_module.soft_update_avg_actor(tau=0.02)
+
         collector.update_policy_weights_()
 
         training_time = time.time() - training_start
@@ -292,6 +292,19 @@ def train(cfg: DictConfig):
 
         writer.add_scalar("Nash/Nash_Conv", nash, global_step)
 
+        writer.add_scalar("Scaling/reward_scale", loss_module.reward_scale.item(), global_step)
+
+        # Log the average actor policy (should converge more smoothly to NE)
+        if loss_module.avg_actor_network_params is not None:
+            with torch.no_grad():
+                sample_td2 = env.reset()
+                avg_pi = loss_module._get_action_probs(sample_td2, use_avg=True)
+                avg_pi_mean = avg_pi.mean(dim=0)  # (n_agents, n_actions)
+                for agent in range(env.n_agents):
+                    for action in range(env.n_actions):
+                        prob = avg_pi_mean[agent, action].item()
+                        writer.add_scalar(f"AvgPolicy/agent{agent}_action{action}", prob, global_step)
+
         torchrl_logger.info(
             f"Iter {i} | "
             f"Frames: {total_frames} | "
@@ -338,4 +351,3 @@ def train(cfg: DictConfig):
 
 if __name__ == "__main__":
     train()
-
