@@ -1,48 +1,35 @@
 seed: 42
-experiment_name: "Balance"
-sub_exp: "DeepERID_Margin=1.0"
-
+experiment_name: Balance
+sub_exp: DeepERID_Margin=1.0
 train:
   num_epochs: 30
   minibatch_size: 4096
-  actor_lr: 1e-4
-  critic_lr: 1e-3
+  actor_lr: 0.0001
+  critic_lr: 0.001
   max_grad_norm: 40.0
   device: ???
   tau: 0.005
-
 env:
   max_steps: 100
-  scenario_name: "discovery"
-  scenario: 
+  scenario_name: discovery
+  scenario:
     n_agents: 3
   device: ???
   num_envs: ??
-
 model:
-  shared_params: True
-  centralised_critic: True
-
+  shared_params: true
+  centralised_critic: true
 collector:
-  frames_per_batch: 60_000
+  frames_per_batch: 60000
   n_iters: 500
   total_frames: ???
-
 buffer:
   memory_size: ???
-
 loss:
   entropy_eps: 0.01
   alpha: 0.5
   gamma: 0.9
   reward_scale: 1.0
-
-eval: 
+eval:
   frequency: 10
-
 logger: {}
-
-hydra:
-  run: 
-    dir: ./outputs/${experiment_name}
-  output_subdir: .hydra

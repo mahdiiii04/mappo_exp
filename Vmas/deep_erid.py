@@ -175,7 +175,6 @@ def train(cfg: DictConfig):
         entropy_coeff=cfg.loss.entropy_eps,
         alpha=cfg.loss.alpha,
         gamma=cfg.loss.gamma,
-        reward_scale=cfg.loss.reward_scale,
     )
 
     loss_module.set_keys(
@@ -285,6 +284,8 @@ def train(cfg: DictConfig):
         writer.add_scalar("Time/iteration_time", iteration_time, global_step)
 
         writer.add_scalar("Frames/total_frames", total_frames, global_step)
+
+        print(f"Reward Scale:{loss_module.reward_scale}")
 
         torchrl_logger.info(
             f"Iter {i} | "

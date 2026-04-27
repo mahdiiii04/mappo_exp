@@ -1,5 +1,5 @@
 seed: 42
-experiment_name: "StagHunt"
+experiment_name: "BiasedRPS"
 sub_exp: "MAPPO"
 
 train:
@@ -11,7 +11,7 @@ train:
 
 env:
   max_steps: 100
-  scenario_name: "stag_hunt"
+  scenario_name: "biased_rps"
   scenario:  {}
   device: ???
   num_envs: ??

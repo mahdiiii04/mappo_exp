@@ -68,9 +68,7 @@ class DeepERIDLoss(LossModule):
             gamma: float = 0.99,
             reduction: str = "mean",
             functional: bool = True,
-            # ── new: average-actor EMA rate ──────────────────────────────────
             avg_actor_tau: float = 0.02,
-            reward_scale: float = 1.0,
     ):
         self._functional = functional
         super().__init__()
@@ -79,12 +77,6 @@ class DeepERIDLoss(LossModule):
             self.convert_to_functional(actor_network, "actor_network")
             self.convert_to_functional(critic_network, "critic_network")
             self.target_critic_network_params = deepcopy(self.critic_network_params)
-
-            # ── Average actor: EMA of live actor weights ──────────────────────
-            # This is the key stabilisation: we bootstrap V_next with the
-            # *time-averaged* policy, whose trajectory converges to Nash
-            # (folk theorem for replicator dynamics), giving the critic a
-            # stationary target even while the live policy is still moving.
             self.avg_actor_network_params = deepcopy(self.actor_network_params)
         else:
             self.actor_network = actor_network
@@ -93,12 +85,6 @@ class DeepERIDLoss(LossModule):
             self.avg_actor_network_params = None
 
         self.avg_actor_tau = avg_actor_tau
-        # Divide rewards by this before computing TD targets so Q values stay
-        # in a bounded range regardless of the payoff matrix scale.
-        # Rule of thumb: set to max_abs_payoff of your game (e.g. 10 for
-        # static_biased_rps).  Q values will then live in [-1/(1-γ), 1/(1-γ)]
-        # instead of [-max_payoff/(1-γ), max_payoff/(1-γ)].
-        self.reward_scale = reward_scale
 
         self.samples_mc_entropy = samples_mc_entropy
         self.entropy_bonus = entropy_bonus
@@ -111,6 +97,10 @@ class DeepERIDLoss(LossModule):
         self.register_buffer("alpha",        torch.as_tensor(alpha,        device=device))
         self.register_buffer("entropy_coeff",torch.as_tensor(entropy_coeff,device=device))
         self.register_buffer("critic_coeff", torch.as_tensor(critic_coeff, device=device))
+        self.register_buffer("reward_scale", torch.tensor(1.0, device=device))
+
+        self.reward_ema = 0.99
+        self.reward_margin = 1.0
 
         log_prob_keys = self.actor_network.log_prob_keys
         action_keys   = self.actor_network.dist_sample_keys
@@ -157,7 +147,6 @@ class DeepERIDLoss(LossModule):
     # ─────────────────────────────────────────────────────────────────────────
 
     def soft_update_target(self, tau: float = 0.005) -> None:
-        """EMA update of the target critic (stabilises TD targets)."""
         if not self.functional or self.target_critic_network_params is None:
             return
         with torch.no_grad():
@@ -168,16 +157,6 @@ class DeepERIDLoss(LossModule):
                 p_target.data.lerp_(p_live.data, tau)
 
     def soft_update_avg_actor(self, tau: float | None = None) -> None:
-        """EMA update of the average actor.
-
-        The average actor accumulates the time-average of the policy.
-        Under replicator dynamics the time-average converges to Nash, so
-        using it for critic bootstrapping gives a stationary, Nash-consistent
-        value target — breaking the best-response oscillation cycle.
-
-        Call this *after* every actor gradient step (same cadence as
-        ``soft_update_target``).
-        """
         if not self.functional or self.avg_actor_network_params is None:
             return
         if tau is None:
@@ -196,14 +175,6 @@ class DeepERIDLoss(LossModule):
     def _get_action_probs(
             self, tensordict: TensorDictBase, use_avg: bool = False
     ) -> torch.Tensor:
-        """Return π(·|s) from either the live actor or the average actor.
-
-        Args:
-            tensordict: Input tensordict (current or next state).
-            use_avg:    If True, use the EMA average actor instead of the live
-                        one.  Pass True when computing V_next for TD targets —
-                        this is the key change that stops critic oscillation.
-        """
         if self.functional:
             if use_avg and self.avg_actor_network_params is not None:
                 params = self.avg_actor_network_params
@@ -248,62 +219,29 @@ class DeepERIDLoss(LossModule):
 
         with torch.no_grad():
             next_q_vals = self._get_q_values(next_tensordict, use_target=True)
-
-            # ── KEY FIX ──────────────────────────────────────────────────────
-            # Use the *average* actor (EMA of live weights) to compute V_next.
-            #
-            # Why this works:
-            #   • Live actor: oscillates around NE → non-stationary targets →
-            #     critic chases a moving best-response → policy cycles.
-            #   • Average actor: time-average of a replicator trajectory
-            #     converges to NE (folk theorem) → stationary target →
-            #     critic learns Nash-consistent Q-values → policy stabilises.
-            #
-            # This is the multi-agent analogue of NFSP's "average strategy
-            # network" but applied to the value bootstrap rather than
-            # behavioural cloning.
-            # ─────────────────────────────────────────────────────────────────
             pi_next = self._get_action_probs(next_tensordict, use_avg=True)
 
             v_next = (pi_next * next_q_vals).sum(dim=-1, keepdim=True)
 
             reward = next_tensordict.get(self.tensor_keys.reward)
+            batch_abs_max = reward.abs().max().clamp(min=1e-6)
+            self.reward_scale.data = torch.max(
+                self.reward_scale * 0.9999,
+                batch_abs_max * self.reward_margin
+            )
+
+            scaled_reward = reward / self.reward_scale.clamp(min=1e-6)
+
             done   = next_tensordict.get(self.tensor_keys.done).float()
-            # Normalise reward so Q values stay bounded regardless of payoff
-            # matrix scale.  All Q values are therefore in [-1/(1-γ), 1/(1-γ)]
-            # which keeps gradients well-conditioned.
-            scaled_reward = reward / self.reward_scale
             target_q = scaled_reward + self.gamma * (1.0 - done) * v_next
 
         action = tensordict.get(self.tensor_keys.action)
         if action.ndim > 1:
             action = action.squeeze(-1)
-        # q_vals are already in scaled space (network always sees scaled targets)
         q_selected = q_vals.gather(-1, action.unsqueeze(-1))  # (batch, n_agents, 1)
 
         loss = distance_loss(target_q, q_selected, loss_function=self.loss_critic_type)
         return loss.mean() if self.reduction == "mean" else loss
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # TD error (diagnostic)
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def compute_td_error(self, tensordict: TensorDictBase) -> torch.Tensor:
-        with torch.no_grad():
-            q_vals = self._get_q_values(tensordict, use_target=False)
-            next_td = tensordict.get("next")
-            next_q  = self._get_q_values(next_td, use_target=True)
-            pi_next = self._get_action_probs(next_td, use_avg=True)   # avg actor
-            v_next  = (pi_next * next_q).sum(dim=-1, keepdim=True)
-            reward  = next_td.get(self.tensor_keys.reward)
-            done    = next_td.get(self.tensor_keys.done).float()
-            target_q = reward + self.gamma * (1.0 - done) * v_next
-            action   = tensordict.get(self.tensor_keys.action)
-            if action.ndim > 1:
-                action = action.squeeze(-1)
-            q_selected = q_vals.gather(-1, action.unsqueeze(-1))
-            td_error = (target_q - q_selected).abs().mean().item()
-        return td_error
 
     # ─────────────────────────────────────────────────────────────────────────
     # Entropy bonus
@@ -320,7 +258,7 @@ class DeepERIDLoss(LossModule):
         return entropy.unsqueeze(-1)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Replicator-inspired policy update (actor target)
+    # Evolutionary Dynamics policy update (actor target)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _policy_update(self, pi: torch.Tensor, q: torch.Tensor) -> torch.Tensor:

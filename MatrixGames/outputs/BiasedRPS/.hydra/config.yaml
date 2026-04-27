@@ -1,14 +1,12 @@
 seed: 42
 experiment_name: BiasedRPS
-sub_exp: DeepERID_Margin=1.0
+sub_exp: MAPPO
 train:
   num_epochs: 10
   minibatch_size: 4096
-  actor_lr: 0.0001
-  critic_lr: 0.001
+  lr: 0.0001
   max_grad_norm: 40.0
   device: ???
-  tau: 0.005
 env:
   max_steps: 100
   scenario_name: biased_rps
@@ -25,10 +23,10 @@ collector:
 buffer:
   memory_size: ???
 loss:
-  entropy_eps: 0.01
-  alpha: 0.1
-  gamma: 0.9
-  reward_scale: 1.0
+  gamma: 0.99
+  lmbda: 0.9
+  entropy_eps: 0
+  clip_epsilon: 0.2
 eval:
   frequency: 10
 logger: {}

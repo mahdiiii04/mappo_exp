@@ -266,6 +266,9 @@ class DeepERIDLoss(LossModule):
         q_j = q.unsqueeze(-2)   # (batch, n_agents, 1, n_actions)
         R   = torch.clamp(q_i - q_j, min=0.0)
 
+        if torch.rand(1) < 0.01:
+            print(R)
+
         term1 = torch.einsum("...j,...ij->...i", pi, R)
         term2 = pi * torch.sum(R, dim=-2)
 
