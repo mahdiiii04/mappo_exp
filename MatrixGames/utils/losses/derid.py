@@ -68,7 +68,9 @@ class DeepERIDLoss(LossModule):
             gamma: float = 0.99,
             reduction: str = "mean",
             functional: bool = True,
+            # ── new: average-actor EMA rate ──────────────────────────────────
             avg_actor_tau: float = 0.02,
+            reward_scale: float = 1.0,
     ):
         self._functional = functional
         super().__init__()
@@ -97,10 +99,7 @@ class DeepERIDLoss(LossModule):
         self.register_buffer("alpha",        torch.as_tensor(alpha,        device=device))
         self.register_buffer("entropy_coeff",torch.as_tensor(entropy_coeff,device=device))
         self.register_buffer("critic_coeff", torch.as_tensor(critic_coeff, device=device))
-        self.register_buffer("reward_scale", torch.tensor(1.0, device=device))
-
-        self.reward_ema = 0.99
-        self.reward_margin = 1.0
+        self.register_buffer("reward_scale", torch.as_tensor(reward_scale, device=device))
 
         log_prob_keys = self.actor_network.log_prob_keys
         action_keys   = self.actor_network.dist_sample_keys
@@ -147,6 +146,7 @@ class DeepERIDLoss(LossModule):
     # ─────────────────────────────────────────────────────────────────────────
 
     def soft_update_target(self, tau: float = 0.005) -> None:
+        """EMA update of the target critic (stabilises TD targets)."""
         if not self.functional or self.target_critic_network_params is None:
             return
         with torch.no_grad():
@@ -157,6 +157,16 @@ class DeepERIDLoss(LossModule):
                 p_target.data.lerp_(p_live.data, tau)
 
     def soft_update_avg_actor(self, tau: float | None = None) -> None:
+        """EMA update of the average actor.
+
+        The average actor accumulates the time-average of the policy.
+        Under replicator dynamics the time-average converges to Nash, so
+        using it for critic bootstrapping gives a stationary, Nash-consistent
+        value target — breaking the best-response oscillation cycle.
+
+        Call this *after* every actor gradient step (same cadence as
+        ``soft_update_target``).
+        """
         if not self.functional or self.avg_actor_network_params is None:
             return
         if tau is None:
@@ -175,6 +185,14 @@ class DeepERIDLoss(LossModule):
     def _get_action_probs(
             self, tensordict: TensorDictBase, use_avg: bool = False
     ) -> torch.Tensor:
+        """Return π(·|s) from either the live actor or the average actor.
+
+        Args:
+            tensordict: Input tensordict (current or next state).
+            use_avg:    If True, use the EMA average actor instead of the live
+                        one.  Pass True when computing V_next for TD targets —
+                        this is the key change that stops critic oscillation.
+        """
         if self.functional:
             if use_avg and self.avg_actor_network_params is not None:
                 params = self.avg_actor_network_params
@@ -224,16 +242,19 @@ class DeepERIDLoss(LossModule):
             v_next = (pi_next * next_q_vals).sum(dim=-1, keepdim=True)
 
             reward = next_tensordict.get(self.tensor_keys.reward)
-            batch_abs_max = reward.abs().max().clamp(min=1e-6)
-            self.reward_scale.data = torch.max(
-                self.reward_scale * 0.9999,
-                batch_abs_max * self.reward_margin
-            )
-
-            scaled_reward = reward / self.reward_scale.clamp(min=1e-6)
-
             done   = next_tensordict.get(self.tensor_keys.done).float()
+
+            r_min = reward.min()
+            r_max = reward.max()
+
+            scaled_reward = (reward - r_min) / (r_max - r_min + 1e-8) 
+            #scaled_reward = reward / self.reward_scale
             target_q = scaled_reward + self.gamma * (1.0 - done) * v_next
+
+            """if torch.rand(1) < 0.01:
+                print("Reward :", reward)
+                print("V_next :", v_next)
+                print("target_q :", target_q)"""
 
         action = tensordict.get(self.tensor_keys.action)
         if action.ndim > 1:
@@ -258,16 +279,21 @@ class DeepERIDLoss(LossModule):
         return entropy.unsqueeze(-1)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Evolutionary Dynamics policy update (actor target)
+    # Replicator-inspired policy update (actor target)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _policy_update(self, pi: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+        """q_centered = q - q.mean(dim=-1, keepdim=True)
+        scale = q_centered.abs().mean(dim=-1, keepdim=True) + 1e-6
+        q_norm = q_centered / scale"""
+
         q_i = q.unsqueeze(-1)   # (batch, n_agents, n_actions, 1)
         q_j = q.unsqueeze(-2)   # (batch, n_agents, 1, n_actions)
         R   = torch.clamp(q_i - q_j, min=0.0)
 
-        if torch.rand(1) < 0.01:
-            print(R)
+        """if torch.rand(1) < 0.01:
+            print("Q_values :", q)
+            print("R matrix :", R)"""
 
         term1 = torch.einsum("...j,...ij->...i", pi, R)
         term2 = pi * torch.sum(R, dim=-2)
@@ -275,8 +301,39 @@ class DeepERIDLoss(LossModule):
         pi_prime = pi + self.alpha * (term1 - term2)
         pi_prime = torch.clamp(pi_prime, min=0.0)
         pi_prime = pi_prime / pi_prime.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-        return pi_prime
 
+        return pi_prime
+    
+    def _policy_update_bnn(self, pi: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+        q_bar = (pi * q).sum(dim=-1, keepdim=True)   # (batch, n_agents, 1)
+
+        # ── Excess fitness of every action over the mean ──────────────────────────
+        excess = q - q_bar                            # (batch, n_agents, n_actions)
+
+        # ── Inflow term: [F_i − F̄]₊ ─────────────────────────────────────────────
+        inflow = excess.clamp(min=0.0)               # (batch, n_agents, n_actions)
+
+        # ── Outflow term: x_i · Σ_j [F_j − F̄]₊ ─────────────────────────────────
+        # total_inflow = Σ_j [F_j − F̄]₊  — scalar per (batch, agent)
+        total_excess = inflow.sum(dim=-1, keepdim=True)  # (batch, n_agents, 1)
+        outflow = pi * total_excess                       # (batch, n_agents, n_actions)
+
+        # ── Euler step in simplex tangent space ──────────────────────────────────
+        pi_dot   = inflow - outflow                  # mass-conserving by construction
+        pi_prime = pi + self.alpha * pi_dot
+
+        """if torch.rand(1) < 0.01:
+            print("Q_values :", q)
+            print("q_bar    :", q_bar)
+            print("excess   :", excess)
+            print("pi_dot   :", pi_dot)"""
+
+        # ── Project back onto simplex (handles small numerical drift) ─────────────
+        pi_prime = pi_prime.clamp(min=0.0)
+        pi_prime = pi_prime / pi_prime.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+
+        return pi_prime
+        
     def _kl_divergence(self, pi_prime: torch.Tensor, pi: torch.Tensor) -> torch.Tensor:
         eps = 1e-8
         pi       = torch.clamp(pi,       min=eps)
@@ -297,6 +354,7 @@ class DeepERIDLoss(LossModule):
 
         with torch.no_grad():
             pi_prime = self._policy_update(pi, q_vals)
+            #pi_prime = self._policy_update_bnn(pi, q_vals)
 
         loss_kl = self._kl_divergence(pi_prime, pi)
         td_out  = TensorDict({"loss_objective": loss_kl}, batch_size=[])

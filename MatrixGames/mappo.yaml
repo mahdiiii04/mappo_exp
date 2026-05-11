@@ -1,5 +1,5 @@
 seed: 42
-experiment_name: "BiasedRPS"
+experiment_name: "MPs"
 sub_exp: "MAPPO"
 
 train:
@@ -11,7 +11,7 @@ train:
 
 env:
   max_steps: 100
-  scenario_name: "biased_rps"
+  scenario_name: "matching_pennies"
   scenario:  {}
   device: ???
   num_envs: ??
@@ -31,7 +31,7 @@ buffer:
 loss:
   gamma: 0.99
   lmbda: 0.9
-  entropy_eps: 0
+  entropy_eps: 0.01
   clip_epsilon: 0.2
 
 eval: 

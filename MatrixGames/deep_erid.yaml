@@ -1,6 +1,7 @@
 seed: 42
-experiment_name: "BiasedRPS"
-sub_exp: "DeepERID_Margin=1.0"
+experiment_name: "MPs"
+sub_exp: "SmithLA"
+
 
 train:
   num_epochs: 10
@@ -13,7 +14,7 @@ train:
 
 env:
   max_steps: 100
-  scenario_name: "biased_rps"
+  scenario_name: "matching_pennies"
   scenario: {} 
   device: ???
   num_envs: ??
@@ -32,7 +33,7 @@ buffer:
 
 loss:
   entropy_eps: 0.01
-  alpha: 0.1
+  alpha: 0.01
   gamma: 0.9
   reward_scale: 1.0
 

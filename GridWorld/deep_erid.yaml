@@ -1,0 +1,51 @@
+seed: 0
+experiment_name: "NSExclusive_NoPhase"
+sub_exp: "Smith"
+
+
+train:
+  num_epochs: 20
+  minibatch_size: 4096
+  actor_lr: 1e-4
+  critic_lr: 1e-3
+  max_grad_norm: 10.0 # try 40
+  device: ???
+  tau: 0.005
+
+env:
+  max_steps: 100
+  scenario_name: "ns_exclusive_nav"
+  device: ???
+  num_envs: ??
+
+model:
+  shared_params: False
+  centralised_critic: True
+
+collector:
+  frames_per_batch: 60_000
+  n_iters: 200
+  total_frames: ???
+
+buffer:
+  memory_size: ???
+
+loss:
+  entropy_eps: 0.01
+  alpha: 0.1
+  gamma: 0.9
+  reward_scale: 1.0
+
+eval: 
+  frequency: 10
+
+logger: {}
+
+hydra:
+  run: 
+    dir: ./outputs/${experiment_name}
+  output_subdir: .hydra
+
+trace_freq: 1    # save a trace every N iters
+trace_envs: 20      # how many parallel envs to log
+trace_steps: 

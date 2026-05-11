@@ -113,12 +113,12 @@ hydra:
     - hydra.mode=RUN
     task: []
   job:
-    name: deep_erid
+    name: mappo
     chdir: null
     override_dirname: ''
     id: ???
     num: ???
-    config_name: deep_erid
+    config_name: mappo
     env_set: {}
     env_copy: []
     config:

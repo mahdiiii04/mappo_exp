@@ -175,11 +175,6 @@ class MatrixGameEnv(EnvBase):
         joint_oh = actions_oh.reshape(ne, -1)
         obs_next = joint_oh[:, None, :].expand(ne, self.n_agents, -1).clone()
 
-        obs_next = torch.zeros(
-            ne, self.n_agents, joint_oh.shape[-1],
-            device=dev, dtype=torch.float32
-        )
-
         return TensorDict(
             {
                 "agents": TensorDict(
@@ -333,6 +328,46 @@ class StagHuntEnv(MatrixGameEnv):
             [
                 [[S, 0], [H, H]],
                 [[S, H], [0, H]],
+            ],
+            dtype=torch.float32,
+        )
+    
+class MatchingPenniesEnv(MatrixGameEnv):
+    """
+    2-player matching pennies game.
+
+    Actions
+    ------
+        0 Heads
+        1 Tails
+    
+    Payoffs
+    ------
+        (Heads, Heads) -> (v, -v)
+        (Heads, Tails) -> (-v, v)
+        (Tails, Heads) -> (-v, v)
+        (Tails, Tails) -> (v, -v)
+
+    default: v = 1.
+    """
+
+    n_agents = 2
+    n_actions = 2
+
+    def __init__(
+            self,
+            v: float = 1.,
+            **kwargs
+    ):
+        self._v = v
+        super().__init__(**kwargs)
+
+    def _build_payoff(self, **_):
+        v = self._v
+        return torch.tensor(
+            [
+                [[v, -v], [-v, v]],
+                [[-v, v], [v, -v]],
             ],
             dtype=torch.float32,
         )
@@ -510,6 +545,7 @@ _REGISTRY: dict[str, type[MatrixGameEnv]] = {
     "prisoners_dilemma": PrisonersDilemmaEnv,
     "rock_paper_scissors": RockPaperScissorsEnv,
     "stag_hunt": StagHuntEnv,
+    "matching_pennies": MatchingPenniesEnv,
     "battle_of_sexes": BattleOfSexesEnv,
     "biased_rps": BiasedRPSEnv,
     "static_biased_rps": StaticBiasedRPSEnv,

@@ -144,13 +144,13 @@ def train(cfg: DictConfig):
     )
 
     # deep erid loss 
-
     loss_module = DeepERIDLoss(
         actor_network=policy,
         critic_network=critic,
         entropy_coeff=cfg.loss.entropy_eps,
         alpha=cfg.loss.alpha,
         gamma=cfg.loss.gamma,
+        reward_scale=cfg.loss.reward_scale,
     )
 
     loss_module.set_keys(
@@ -213,6 +213,10 @@ def train(cfg: DictConfig):
                 actor_optim.step()
 
                 loss_module.soft_update_target(tau=cfg.train.tau)
+                # NOTE: soft_update_avg_actor is intentionally NOT called here.
+                # Calling it every gradient step (×120/iter) makes the average
+                # actor equivalent to the live actor with a tiny lag — defeating
+                # the purpose.  It is called once per *iteration* below.
 
                 total_norm = sum(
                     p.grad.norm().item() ** 2
@@ -222,6 +226,10 @@ def train(cfg: DictConfig):
 
                 training_tds[-1].set("grad_norm", torch.tensor(total_norm, device=cfg.train.device))
 
+        # ── Update average actor ONCE per iteration ──────────────────────────
+        # tau=0.02 per iteration means the average blends in ~2% of the current
+        # policy each pass.  Over 100 iterations the effective "memory" is
+        # ~50 iterations, giving a true time-average rather than a lagged copy.
         loss_module.soft_update_avg_actor(tau=0.02)
 
         collector.update_policy_weights_()
@@ -291,8 +299,6 @@ def train(cfg: DictConfig):
         writer.add_scalar("Frames/total_frames", total_frames, global_step)
 
         writer.add_scalar("Nash/Nash_Conv", nash, global_step)
-
-        writer.add_scalar("Scaling/reward_scale", loss_module.reward_scale.item(), global_step)
 
         # Log the average actor policy (should converge more smoothly to NE)
         if loss_module.avg_actor_network_params is not None:
