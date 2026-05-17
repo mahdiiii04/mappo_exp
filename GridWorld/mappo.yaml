@@ -1,5 +1,5 @@
 seed: 0
-experiment_name: "NSExclusive_NoPhase"
+experiment_name: "Five_NSCoop"
 sub_exp: "MAPPO"
 
 train:
@@ -11,7 +11,7 @@ train:
 
 env:
   max_steps: 100
-  scenario_name: "ns_exclusive_nav" 
+  scenario_name: "ns_cooperative_nav" 
   device: ???           
   num_envs: ??         
 

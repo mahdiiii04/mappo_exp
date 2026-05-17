@@ -1,6 +1,6 @@
 seed: 42
 experiment_name: "Balance"
-sub_exp: "DeepERID_Margin=1.0"
+sub_exp: "DeepERID"
 
 train:
   num_epochs: 30
@@ -13,7 +13,7 @@ train:
 
 env:
   max_steps: 100
-  scenario_name: "discovery"
+  scenario_name: "balance"
   scenario: 
     n_agents: 3
   device: ???
@@ -34,7 +34,7 @@ buffer:
 loss:
   entropy_eps: 0.01
   alpha: 0.5
-  gamma: 0.9
+  gamma: 0.99
   reward_scale: 1.0
 
 eval: 

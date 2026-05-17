@@ -335,7 +335,14 @@ class DeepERIDLoss(LossModule):
             #pi_prime = self._policy_update_bnn(pi, q_vals)
 
         loss_kl = self._kl_divergence(pi_prime, pi)
-        td_out  = TensorDict({"loss_objective": loss_kl}, batch_size=[])
+        # Use .mean() (over batch AND agents) so the loss magnitude stays
+        # constant regardless of n_agents.  The old kl.mean(dim=0).sum()
+        # summed over the agent dimension, making loss_objective scale
+        # linearly with n_agents (2× for 2-agents, 5× for 5-agents).
+        # That 2.5× mismatch inflated actor gradients and crushed the
+        # entropy term's effective coefficient, causing instability at 5
+        # agents while 2/3/4 agents appeared fine.
+        td_out  = TensorDict({"loss_objective": loss_kl.mean()}, batch_size=[])
 
         if self.entropy_bonus and self.entropy_coeff > 0:
             with (

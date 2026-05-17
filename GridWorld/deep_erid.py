@@ -199,8 +199,6 @@ def train(cfg: DictConfig):
                 torch.nn.utils.clip_grad_norm_(actor_params, cfg.train.max_grad_norm)
                 actor_optim.step()
 
-                loss_module.soft_update_target(tau=cfg.train.tau)
-
                 total_norm = sum(
                     p.grad.norm().item() ** 2
                     for p in actor_params + critic_params
@@ -208,7 +206,8 @@ def train(cfg: DictConfig):
                 ) ** 0.5
 
                 training_tds[-1].set("grad_norm", torch.tensor(total_norm, device=cfg.train.device))
-        
+
+        loss_module.soft_update_target(tau=cfg.train.tau)
         loss_module.soft_update_avg_actor(tau=0.02)
 
         collector.update_policy_weights_()

@@ -1,0 +1,36 @@
+seed: 0
+experiment_name: Three_NSCoop
+sub_exp: Smith
+train:
+  num_epochs: 20
+  minibatch_size: 4096
+  actor_lr: 0.0001
+  critic_lr: 0.001
+  max_grad_norm: 10.0
+  device: ???
+  tau: 0.005
+env:
+  max_steps: 100
+  scenario_name: ns_cooperative_nav
+  device: ???
+  num_envs: ??
+model:
+  shared_params: false
+  centralised_critic: true
+collector:
+  frames_per_batch: 60000
+  n_iters: 200
+  total_frames: ???
+buffer:
+  memory_size: ???
+loss:
+  entropy_eps: 0.01
+  alpha: 0.1
+  gamma: 0.99
+  reward_scale: 1.0
+eval:
+  frequency: 10
+logger: {}
+trace_freq: 1
+trace_envs: 20
+trace_steps: null

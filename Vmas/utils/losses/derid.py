@@ -69,6 +69,7 @@ class DeepERIDLoss(LossModule):
             reduction: str = "mean",
             functional: bool = True,
             avg_actor_tau: float = 0.02,
+            reward_scale: float = 1.0,
     ):
         self._functional = functional
         super().__init__()
@@ -91,13 +92,14 @@ class DeepERIDLoss(LossModule):
         self.reduction = reduction
         self.gamma = gamma
         self.loss_critic_type = loss_critic_type
+        
 
         device = _get_default_device(self)
 
         self.register_buffer("alpha",        torch.as_tensor(alpha,        device=device))
         self.register_buffer("entropy_coeff",torch.as_tensor(entropy_coeff,device=device))
         self.register_buffer("critic_coeff", torch.as_tensor(critic_coeff, device=device))
-        self.register_buffer("reward_scale", torch.tensor(1.0, device=device))
+        self.register_buffer("reward_scale", torch.tensor(reward_scale, device=device))
 
         self.reward_ema = 0.99
         self.reward_margin = 1.0
@@ -230,7 +232,12 @@ class DeepERIDLoss(LossModule):
                 batch_abs_max * self.reward_margin
             )
 
-            scaled_reward = reward / self.reward_scale.clamp(min=1e-6)
+            r_min = reward.min()
+            r_max = reward.max()
+
+            scaled_reward = (reward - r_min) / (r_max - r_min + 1e-8) 
+            #scaled_reward = reward
+            #scaled_reward = reward / self.reward_scale.clamp(min=1e-6)
 
             done   = next_tensordict.get(self.tensor_keys.done).float()
             target_q = scaled_reward + self.gamma * (1.0 - done) * v_next
@@ -274,6 +281,37 @@ class DeepERIDLoss(LossModule):
         pi_prime = pi_prime / pi_prime.sum(dim=-1, keepdim=True).clamp(min=1e-8)
         return pi_prime
 
+    """def _policy_update_bnn(self, pi: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+        # Use uniform mean (not pi-weighted) so excess doesn't vanish when pi peaks
+        q_bar = q.mean(dim=-1, keepdim=True)            # uniform baseline
+        # Or even sharper: q_bar = q.min(dim=-1, keepdim=True).values
+
+        excess = q - q_bar
+        inflow  = excess.clamp(min=0.0)
+        total_inflow = inflow.sum(dim=-1, keepdim=True)
+        outflow = pi * total_inflow
+
+        pi_dot   = inflow - outflow
+        pi_prime = (pi + self.alpha * pi_dot).clamp(min=0.0)
+        pi_prime = pi_prime / pi_prime.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        return pi_prime"""
+    
+    def _policy_update_bnn(self, pi: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+        q_bar   = (pi * q).sum(dim=-1, keepdim=True)
+        excess  = q - q_bar
+        inflow  = excess.clamp(min=0.0)
+        total_inflow = inflow.sum(dim=-1, keepdim=True)
+        outflow = pi * total_inflow
+
+        pi_dot   = inflow - outflow
+
+        # Normalize update magnitude so it doesn't vanish when pi peaks
+        pi_dot_norm = pi_dot / (pi_dot.abs().max(dim=-1, keepdim=True).values.clamp(min=1e-6))
+
+        pi_prime = (pi + self.alpha * pi_dot_norm).clamp(min=0.0)
+        pi_prime = pi_prime / pi_prime.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        return pi_prime
+        
     def _kl_divergence(self, pi_prime: torch.Tensor, pi: torch.Tensor) -> torch.Tensor:
         eps = 1e-8
         pi       = torch.clamp(pi,       min=eps)
@@ -294,9 +332,17 @@ class DeepERIDLoss(LossModule):
 
         with torch.no_grad():
             pi_prime = self._policy_update(pi, q_vals)
+            #pi_prime = self._policy_update_bnn(pi, q_vals)
 
         loss_kl = self._kl_divergence(pi_prime, pi)
-        td_out  = TensorDict({"loss_objective": loss_kl}, batch_size=[])
+        # Use .mean() (over batch AND agents) so the loss magnitude stays
+        # constant regardless of n_agents.  The old kl.mean(dim=0).sum()
+        # summed over the agent dimension, making loss_objective scale
+        # linearly with n_agents (2× for 2-agents, 5× for 5-agents).
+        # That 2.5× mismatch inflated actor gradients and crushed the
+        # entropy term's effective coefficient, causing instability at 5
+        # agents while 2/3/4 agents appeared fine.
+        td_out  = TensorDict({"loss_objective": loss_kl.mean()}, batch_size=[])
 
         if self.entropy_bonus and self.entropy_coeff > 0:
             with (

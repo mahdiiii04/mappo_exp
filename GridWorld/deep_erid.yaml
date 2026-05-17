@@ -1,6 +1,6 @@
 seed: 0
-experiment_name: "NSExclusive_NoPhase"
-sub_exp: "Smith"
+experiment_name: "Trash"
+sub_exp: "Smith4"
 
 
 train:
@@ -14,7 +14,7 @@ train:
 
 env:
   max_steps: 100
-  scenario_name: "ns_exclusive_nav"
+  scenario_name: "ns_cooperative_nav"
   device: ???
   num_envs: ??
 
@@ -33,7 +33,7 @@ buffer:
 loss:
   entropy_eps: 0.01
   alpha: 0.1
-  gamma: 0.9
+  gamma: 0.99
   reward_scale: 1.0
 
 eval: 
