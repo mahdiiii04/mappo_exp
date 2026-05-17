@@ -1,14 +1,14 @@
-seed: 42
+seed: 0
 
 train:
-  num_epochs: 45
+  num_epochs: 30
   minibatch_size: 4096
   lr: 5e-5
   max_grad_norm: 40.0
   device: ???
 
 env:
-  max_steps: 1
+  max_steps: 100
   scenario_name: "balance"
   scenario:
     n_agents: 3
@@ -16,7 +16,7 @@ env:
   num_envs: ??
 
 model:
-  shared_params: True
+  shared_params: False
   centralised_critic: True
 
 collector:

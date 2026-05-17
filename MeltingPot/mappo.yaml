@@ -1,0 +1,44 @@
+seed: 0
+experiment_name: "MeltingPot_MAPPO"
+sub_exp: "MAPPO"
+
+train:
+  num_epochs: 4
+  minibatch_size: 200
+  lr: 1e-4
+  max_grad_norm: 10.0
+  device: ???
+
+env:
+  substrate_name: "commons_harvest__open"
+  max_steps: 1000
+  device: ???
+  num_envs: ??          # filled at runtime: frames_per_batch // max_steps
+
+model:
+  shared_params: False
+  centralised_critic: True
+
+collector:
+  frames_per_batch: 2_000   # was 60_000 — RGB obs (7x88x88x3) is ~150MB per 1k frames
+  n_iters: 500              # more iters to compensate for smaller batches
+  total_frames: ???         # filled at runtime
+
+buffer:
+  memory_size: ???          # filled at runtime
+
+loss:
+  gamma: 0.99
+  lmbda: 0.95
+  entropy_eps: 0.01
+  clip_epsilon: 0.2
+
+eval:
+  frequency: 10
+
+logger: {}
+
+hydra:
+  run:
+    dir: ./outputs/${experiment_name}
+  output_subdir: .hydra
