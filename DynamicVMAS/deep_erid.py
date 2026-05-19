@@ -22,6 +22,8 @@ from torch.utils.tensorboard import SummaryWriter
 from omegaconf import DictConfig
 
 from utils.utils import DoneTransform
+from utils.losses.derid import DeepERIDLoss
+from dynamic_balance import Scenario as DynamicBalanceScenario
 
 def rendering_callback(env, td):
     env.frames.append(env.render(mode="rgb_array", agent_index_focus=None))
@@ -48,7 +50,7 @@ def evaluate_policy(env_test, policy):
     policy.train()
     return mean_episode_reward
 
-@hydra.main(version_base="1.1", config_path="", config_name="mappo")
+@hydra.main(version_base="1.1", config_path="", config_name="deep_erid")
 def train(cfg: DictConfig):
     # setting up device
     cfg.train.device = "cpu" if not torch.cuda.is_available() else "cuda:0"
@@ -63,13 +65,16 @@ def train(cfg: DictConfig):
     cfg.buffer.memory_size = cfg.collector.frames_per_batch
 
     # initializing logging
-    log_dir = os.path.join("tb_logs", f"{cfg.env.scenario_name}-seed-{cfg.seed}")
+    log_dir = os.path.join("tb_logs", cfg.sub_exp)
     writer = SummaryWriter(log_dir=log_dir)
     torchrl_logger.info(f"Tensorboard logging to: {log_dir}")
 
     # environments
+    use_dynamic_goal = cfg.env.get("dynamic_goal", False)
+    scenario = DynamicBalanceScenario() if use_dynamic_goal else cfg.env.scenario_name
+
     env = VmasEnv(
-        scenario=cfg.env.scenario_name,
+        scenario=scenario,
         num_envs=cfg.env.num_envs,
         continuous_actions=False,
         max_steps=cfg.env.max_steps,
@@ -84,7 +89,7 @@ def train(cfg: DictConfig):
     )
 
     env_test = VmasEnv(
-        scenario=cfg.env.scenario_name,
+        scenario=DynamicBalanceScenario() if use_dynamic_goal else cfg.env.scenario_name,
         num_envs=cfg.env.num_envs,
         continuous_actions=False,
         max_steps=cfg.env.max_steps,
@@ -130,21 +135,22 @@ def train(cfg: DictConfig):
     )
 
     # critic
-    critic_module = MultiAgentMLP(
+    critic_net = MultiAgentMLP(
         n_agent_inputs=env.observation_spec[("agents", "observation")].shape[-1],
-        n_agent_outputs=1,
+        n_agent_outputs=env.full_action_spec_unbatched[env.action_key].shape[-1],
         n_agents=env.n_agents,
         centralized=cfg.model.centralised_critic,
         share_params=cfg.model.shared_params,
         device=cfg.train.device,
         depth=2,
-        num_cells=256,
+        num_cells=128,
         activation_class=nn.Tanh,
     )
 
     critic = ValueOperator(
-        critic_module,
+        critic_net,
         in_keys=[("agents", "observation")],
+        out_keys=["q_value"],
     )
 
     # dealing with env data
@@ -167,12 +173,12 @@ def train(cfg: DictConfig):
 
     # ppo loss 
 
-    loss_module = ClipPPOLoss(
+    loss_module = DeepERIDLoss(
         actor_network=policy,
         critic_network=critic,
-        clip_epsilon=cfg.loss.clip_epsilon,
         entropy_coeff=cfg.loss.entropy_eps,
-        normalize_advantage=False,
+        alpha=cfg.loss.alpha,
+        gamma=cfg.loss.gamma,
     )
 
     loss_module.set_keys(
@@ -180,13 +186,19 @@ def train(cfg: DictConfig):
         action=env.action_key,
         done=("agents", "done"),
         terminated=("agents", "terminated"),
+        sample_log_prob=("agents", "action_log_prob"),
     )
 
-    loss_module.make_value_estimator(
-        ValueEstimators.GAE, gamma=cfg.loss.gamma, lmbda=cfg.loss.lmbda
-    )
 
-    optim = torch.optim.Adam(params=loss_module.parameters(), lr=cfg.train.lr)
+    if loss_module.functional:
+        actor_params = list(loss_module.actor_network_params.values(True, True))
+        critic_params = list(loss_module.critic_network_params.values(True, True))
+    else:
+        actor_params = list(loss_module.actor_network.parameters())
+        critic_params = list(loss_module.critic_network.parameters())
+
+    actor_optim = torch.optim.Adam(actor_params, lr=cfg.train.actor_lr)
+    critic_optim = torch.optim.Adam(critic_params, lr=cfg.train.critic_lr)
 
     # training loop 
 
@@ -195,18 +207,10 @@ def train(cfg: DictConfig):
     sampling_start = time.time()
 
     eval_freq = cfg.eval.frequency
+    policy_history = []
 
     for i, tensordict_data in enumerate(collector):
         sampling_time = time.time() - sampling_start
-
-        with torch.no_grad():
-            loss_module.value_estimator(
-                tensordict_data,
-                params=loss_module.critic_network_params,
-                target_params=loss_module.target_critic_network_params,  # later scith to None 
-            )
-
-        print(tensordict_data["agents", "observation"])
         
         current_frames = tensordict_data.numel()
         total_frames += current_frames
@@ -221,21 +225,31 @@ def train(cfg: DictConfig):
                 loss_vals = loss_module(subdata)
                 training_tds.append(loss_vals.detach())
 
-                loss_value = (
-                    loss_vals["loss_objective"] + loss_vals["loss_critic"] + loss_vals["loss_entropy"]
-                )
+                 # --- Critic Step ---
+                critic_optim.zero_grad()
+                loss_vals["loss_critic"].backward(retain_graph=True)
+                torch.nn.utils.clip_grad_norm_(critic_params, cfg.train.max_grad_norm)
+                critic_optim.step()
 
-                loss_value.backward()
+                # --- Actor Step ---
+                actor_optim.zero_grad()
+                actor_loss = loss_vals["loss_objective"] + loss_vals["loss_entropy"]
+                actor_loss.backward()
+                torch.nn.utils.clip_grad_norm_(actor_params, cfg.train.max_grad_norm)
+                actor_optim.step()
 
-                total_norm = torch.nn.utils.clip_grad_norm_(
-                    loss_module.parameters(), cfg.train.max_grad_norm
-                )
-                training_tds[-1].set("grad_norm", total_norm.mean())
+                loss_module.soft_update_target(tau=cfg.train.tau)
 
-                optim.step()
-                optim.zero_grad()
+                total_norm = sum(
+                    p.grad.norm().item() ** 2
+                    for p in actor_params + critic_params
+                    if p.grad is not None
+                ) ** 0.5
 
+                training_tds[-1].set("grad_norm", torch.tensor(total_norm, device=cfg.train.device))
         
+        loss_module.soft_update_avg_actor(tau=0.02)
+
         collector.update_policy_weights_()
 
         training_time = time.time() - training_start
@@ -275,6 +289,8 @@ def train(cfg: DictConfig):
 
         writer.add_scalar("Frames/total_frames", total_frames, global_step)
 
+        print(f"Reward Scale:{loss_module.reward_scale}")
+
         torchrl_logger.info(
             f"Iter {i} | "
             f"Frames: {total_frames} | "
@@ -305,6 +321,3 @@ def train(cfg: DictConfig):
 
 if __name__ == "__main__":
     train()
-
-
-

@@ -22,6 +22,7 @@ from torch.utils.tensorboard import SummaryWriter
 from omegaconf import DictConfig
 
 from utils.utils import DoneTransform
+from dynamic_balance import Scenario as DynamicBalanceScenario
 
 def rendering_callback(env, td):
     env.frames.append(env.render(mode="rgb_array", agent_index_focus=None))
@@ -68,8 +69,14 @@ def train(cfg: DictConfig):
     torchrl_logger.info(f"Tensorboard logging to: {log_dir}")
 
     # environments
+    # If dynamic_goal is enabled, use the custom subclassed scenario class
+    # so the goal teleports every cfg.env.scenario.goal_move_every steps.
+    # Otherwise fall back to the plain scenario name string.
+    use_dynamic_goal = cfg.env.get("dynamic_goal", False)
+    scenario = DynamicBalanceScenario() if use_dynamic_goal else cfg.env.scenario_name
+
     env = VmasEnv(
-        scenario=cfg.env.scenario_name,
+        scenario=scenario,
         num_envs=cfg.env.num_envs,
         continuous_actions=False,
         max_steps=cfg.env.max_steps,
@@ -84,7 +91,7 @@ def train(cfg: DictConfig):
     )
 
     env_test = VmasEnv(
-        scenario=cfg.env.scenario_name,
+        scenario=DynamicBalanceScenario() if use_dynamic_goal else cfg.env.scenario_name,
         num_envs=cfg.env.num_envs,
         continuous_actions=False,
         max_steps=cfg.env.max_steps,
@@ -205,8 +212,6 @@ def train(cfg: DictConfig):
                 params=loss_module.critic_network_params,
                 target_params=loss_module.target_critic_network_params,  # later scith to None 
             )
-
-        print(tensordict_data["agents", "observation"])
         
         current_frames = tensordict_data.numel()
         total_frames += current_frames
@@ -305,6 +310,3 @@ def train(cfg: DictConfig):
 
 if __name__ == "__main__":
     train()
-
-
-

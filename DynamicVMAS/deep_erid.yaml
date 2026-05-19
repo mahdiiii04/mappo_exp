@@ -14,8 +14,16 @@ train:
 env:
   max_steps: 100
   scenario_name: "balance"
+  # Set to true to use the dynamic-goal variant (goal teleports mid-episode)
+  dynamic_goal: true
   scenario: 
     n_agents: 3
+    # --- dynamic goal knobs (only used when dynamic_goal: true) ---
+    goal_move_every: 25
+    goal_move_x_low: -1.0
+    goal_move_x_high: 1.0
+    goal_move_y_low: 0.0
+    # goal_move_y_high defaults to world.y_semidim if omitted
   device: ???
   num_envs: ??
 

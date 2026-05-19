@@ -1,40 +1,36 @@
 seed: 0
-
 train:
   num_epochs: 30
   minibatch_size: 4096
-  lr: 5e-5
+  lr: 5.0e-05
   max_grad_norm: 40.0
   device: ???
-
 env:
   max_steps: 100
-  scenario_name: "balance"
+  scenario_name: balance
+  dynamic_goal: true
   scenario:
     n_agents: 3
+    goal_move_every: 25
+    goal_move_x_low: -1.0
+    goal_move_x_high: 1.0
+    goal_move_y_low: 0.0
   device: ???
   num_envs: ??
-
 model:
-  shared_params: False
-  centralised_critic: True
-
+  shared_params: false
+  centralised_critic: true
 collector:
-  frames_per_batch: 60_000
+  frames_per_batch: 60000
   n_iters: 500
   total_frames: ???
-
 buffer:
   memory_size: ???
-
 loss:
   gamma: 0.99
   lmbda: 0.9
   entropy_eps: 0.01
   clip_epsilon: 0.2
-
-eval: 
+eval:
   frequency: 10
-
-logger:
-  
+logger: null
