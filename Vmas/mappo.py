@@ -205,8 +205,6 @@ def train(cfg: DictConfig):
                 params=loss_module.critic_network_params,
                 target_params=loss_module.target_critic_network_params,  # later scith to None 
             )
-
-        print(tensordict_data["agents", "observation"])
         
         current_frames = tensordict_data.numel()
         total_frames += current_frames
