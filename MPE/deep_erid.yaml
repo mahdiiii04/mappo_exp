@@ -1,0 +1,52 @@
+seed: 42
+experiment_name: "SimpleSpread"
+sub_exp: "DeepERID-MPE"
+
+train:
+  num_epochs: 30
+  minibatch_size: 4096
+  actor_lr: 1e-4
+  critic_lr: 1e-3
+  max_grad_norm: 40.0
+  device: ???           # set automatically at runtime
+  tau: 0.005
+
+env:
+  # max_steps drives rollout length in the collector.
+  # Keep in sync with max_cycles in scenario below.
+  max_steps: 25
+  scenario_name: "simple_spread_v3"   # cooperative coverage — closest to VMAS "balance"
+  scenario:
+    N: 3                # number of agents
+    max_cycles: 25      # episode length — keep equal to env.max_steps
+    # local_ratio: 0.5  # uncomment to tune cooperative vs. individual reward split
+  device: ???           # set automatically at runtime
+  num_envs: ??          # derived at runtime: frames_per_batch // max_steps
+
+model:
+  shared_params: False
+  centralised_critic: True
+
+collector:
+  frames_per_batch: 60_000
+  n_iters: 500
+  total_frames: ???     # derived: frames_per_batch * n_iters
+
+buffer:
+  memory_size: ???      # derived: frames_per_batch
+
+loss:
+  entropy_eps: 0.01
+  alpha: 0.5
+  gamma: 0.9
+  reward_scale: 1.0
+
+eval:
+  frequency: 10
+
+logger: {}
+
+hydra:
+  run:
+    dir: ./outputs/${experiment_name}
+  output_subdir: .hydra

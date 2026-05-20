@@ -449,7 +449,7 @@ class CooperativeNavEnv(GridWorldEnv):
     They also get a small reward for getting close to it (shaping).
     """
 
-    n_agents = 4
+    n_agents = 2
     n_goals = 1
     grid_size = 8
     extra_obs_dim = 0

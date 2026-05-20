@@ -1,0 +1,45 @@
+seed: 0
+
+train:
+  num_epochs: 30
+  minibatch_size: 4096
+  lr: 5e-5
+  max_grad_norm: 40.0
+  device: ???           # set automatically at runtime
+
+env:
+  # max_steps drives rollout length inside the collector.
+  # It should match max_cycles passed to the MPE scenario below.
+  max_steps: 25
+  scenario_name: "simple_spread_v3"   # closest MPE equivalent to VMAS "balance"
+                                       # other options: simple_v3, simple_tag_v3,
+                                       #   simple_adversary_v3, simple_world_comm_v3
+  scenario:
+    N: 3                # number of agents (must match the scenario default or override)
+    max_cycles: 25      # episode length — keep in sync with env.max_steps above
+    # local_ratio: 0.5  # uncomment to tune cooperative vs. individual reward split
+  device: ???           # set automatically at runtime
+  num_envs: ??          # derived at runtime: frames_per_batch // max_steps
+
+model:
+  shared_params: False
+  centralised_critic: True
+
+collector:
+  frames_per_batch: 60_000
+  n_iters: 500
+  total_frames: ???     # derived at runtime: frames_per_batch * n_iters
+
+buffer:
+  memory_size: ???      # derived at runtime: frames_per_batch
+
+loss:
+  gamma: 0.99
+  lmbda: 0.9
+  entropy_eps: 0.01
+  clip_epsilon: 0.2
+
+eval:
+  frequency: 10
+
+logger:

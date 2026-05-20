@@ -1,0 +1,44 @@
+seed: 42
+experiment_name: "BiasedRPS_T"
+sub_exp: "VDN"
+
+train:
+  num_epochs: 10
+  minibatch_size: 4096
+  lr: 1e-3
+  max_grad_norm: 40.0
+  device: ???
+
+env:
+  max_steps: 100
+  scenario_name: "biased_rps"
+  scenario: {}
+  device: ???
+  num_envs: ???
+
+model:
+  shared_parameters: False
+
+collector:
+  frames_per_batch: 51200
+  n_iters: 100
+  total_frames: ???
+
+buffer:
+  memory_size: ???
+
+loss:
+  mixer_type: "vdn"   # or "vdn"
+  gamma: 0.99
+  tau: 0.005           # soft update rate for target net
+  eps_init: 0.3        # epsilon-greedy starting value
+  eps_end: 0.01        # epsilon-greedy final value
+  eps_anneal_frac: 0.5 # fraction of total_frames over which to anneal
+
+eval:
+  frequency: 10
+
+hydra:
+  run:
+    dir: ./outputs/${experiment_name}
+  output_subdir: .hydra

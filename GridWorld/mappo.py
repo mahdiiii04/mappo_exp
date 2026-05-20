@@ -164,7 +164,26 @@ def train(cfg: DictConfig):
     metric_history = []
 
     goal = env._goals[0][0].tolist()
-    
+
+    # ── Reconvergence tracking ────────────────────────────────────────────────
+    # How close to the pre-switch baseline counts as "recovered":
+    #   mean_episode_reward >= RECONVERGE_THRESHOLD * pre_switch_reward
+    # We require RECONVERGE_PATIENCE consecutive iterations above the threshold
+    # to avoid noisy spikes being mistaken for genuine recovery.
+    RECONVERGE_THRESHOLD = 0.95
+    RECONVERGE_PATIENCE  = 3
+
+    prev_mean_reward  = None   # reward from the immediately preceding iteration
+    prev_pos_entropy  = None   # entropy from the immediately preceding iteration
+
+    _switch_baseline_reward  = None  # pre-switch snapshot
+    _switch_baseline_entropy = None
+    _switch_frame            = None  # global_step at the switch
+    _switch_iter             = None  # loop index i at the switch
+    _is_post_switch          = False
+    _patience_counter        = 0
+    # ─────────────────────────────────────────────────────────────────────────
+
     for i, tensordict_data in enumerate(collector):
         sampling_time = time.time() - sampling_start
 
@@ -232,11 +251,56 @@ def train(cfg: DictConfig):
         mean_goal_dist = compute_mean_goal_distance(env)
         domain_metrics = env.compute_metrics()         # scenario-specific
 
-        if goal != env._goals[0][0].tolist():
+        # ── Goal-switch detection ─────────────────────────────────────────────
+        goal_changed = (goal != env._goals[0][0].tolist())
+
+        if goal_changed:
             goal = env._goals[0][0].tolist()
             writer.add_scalar("GridWorld/Goal_Change", 1.0, global_step)
+
+            # Baseline = the iteration that ended *just before* the switch.
+            # prev_mean_reward is None only on the very first iteration.
+            _switch_baseline_reward  = prev_mean_reward if prev_mean_reward is not None else mean_episode_reward
+            _switch_baseline_entropy = prev_pos_entropy if prev_pos_entropy is not None else pos_entropy
+            _switch_frame   = global_step
+            _switch_iter    = i
+            _is_post_switch = True
+            _patience_counter = 0
+
+            # Immediate reward drop at the switch moment
+            reward_drop_at_switch = _switch_baseline_reward - mean_episode_reward
+            writer.add_scalar("Switch/reward_baseline",       _switch_baseline_reward,  global_step)
+            writer.add_scalar("Switch/reward_drop_at_switch", reward_drop_at_switch,    global_step)
         else:
             writer.add_scalar("GridWorld/Goal_Change", 0.0, global_step)
+
+        # ── Per-iteration post-switch tracking ────────────────────────────────
+        if _is_post_switch and _switch_baseline_reward is not None:
+            frames_since_switch = global_step - _switch_frame
+            iters_since_switch  = i - _switch_iter
+
+            reward_gap            = _switch_baseline_reward - mean_episode_reward
+            normalized_reward_gap = reward_gap / (abs(_switch_baseline_reward) + 1e-8)
+
+            writer.add_scalar("Switch/frames_since_switch",   frames_since_switch,   global_step)
+            writer.add_scalar("Switch/reward_gap",            reward_gap,            global_step)
+            writer.add_scalar("Switch/normalized_reward_gap", normalized_reward_gap, global_step)
+
+            # Patience-gated reconvergence event
+            recovered = (mean_episode_reward >= RECONVERGE_THRESHOLD * _switch_baseline_reward)
+            _patience_counter = (_patience_counter + 1) if recovered else 0
+
+            if _patience_counter >= RECONVERGE_PATIENCE:
+                writer.add_scalar("Switch/frames_to_reconverge", frames_since_switch, global_step)
+                writer.add_scalar("Switch/iters_to_reconverge",  iters_since_switch,  global_step)
+                torchrl_logger.info(
+                    f"  -> Reconverged after {iters_since_switch} iters "
+                    f"({frames_since_switch} frames) | "
+                    f"reward {mean_episode_reward:.3f} vs baseline {_switch_baseline_reward:.3f}"
+                )
+                _is_post_switch   = False
+                _patience_counter = 0
+        # ─────────────────────────────────────────────────────────────────────
 
         writer.add_scalar("Reward/mean_episode_reward", mean_episode_reward, global_step)
         for a_i in range(env.n_agents):
@@ -288,6 +352,12 @@ def train(cfg: DictConfig):
                 )
 
         domain_str = " | ".join(f"{k} {v:.3f}" for k, v in domain_metrics.items())
+        reconv_str = (
+            f" | Gap {_switch_baseline_reward - mean_episode_reward:+.3f}"
+            f" ({i - _switch_iter}it)"
+            if _is_post_switch and _switch_baseline_reward is not None
+            else ""
+        )
         torchrl_logger.info(
             f"Iter {i:4d} | "
             f"Frames {total_frames:8d} | "
@@ -297,6 +367,7 @@ def train(cfg: DictConfig):
             f"Entropy {avg_loss_entropy:7.4f} | "
             f"PosEntropy {pos_entropy:.3f}"
             + (f" | {domain_str}" if domain_str else "")
+            + reconv_str
         )
 
         metric_history.append({
@@ -304,8 +375,19 @@ def train(cfg: DictConfig):
             "mean_episode_reward":  mean_episode_reward,
             "positional_entropy":   pos_entropy,
             "mean_goal_dist":       mean_goal_dist,
+            # Reconvergence: non-None only while tracking a post-switch window
+            "reward_gap":           (_switch_baseline_reward - mean_episode_reward)
+                                    if _is_post_switch and _switch_baseline_reward is not None
+                                    else None,
+            "frames_since_switch":  (global_step - _switch_frame)
+                                    if _is_post_switch and _switch_frame is not None
+                                    else None,
             **domain_metrics,
         })
+
+        # Roll per-iteration state for the next iteration's baseline snapshot
+        prev_mean_reward = mean_episode_reward
+        prev_pos_entropy = pos_entropy
 
         if i % eval_freq == 0 or i == cfg.collector.n_iters - 1:
             eval_reward = evaluate_policy(env_test=env_test, policy=policy)

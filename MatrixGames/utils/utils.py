@@ -132,3 +132,69 @@ def compute_relative_nash_conv(
         nash_conv = raw_nash_conv
 
     return nash_conv, avg_pi.clone().cpu()
+
+# ── Add this function to utils/utils.py ──────────────────────────────────────
+
+@torch.no_grad()
+def compute_nash_conv_qnet(
+    env,
+    qnet,
+    device=None,
+    temperature: float = 1.0,
+) -> tuple[float, torch.Tensor]:
+    """Nash convergence for Q-value policies (QMIX / VDN / IQL).
+
+    Instead of sampling a distribution, we run the Q-network over a rollout,
+    then convert Q-values to a soft policy via softmax(Q / temperature).
+    temperature=1.0 gives a reasonable soft policy; lower values approach
+    greedy (one-hot), higher values approach uniform.
+    """
+    if device is None:
+        device = env.device
+
+    n_agents  = env.n_agents
+    n_actions = env.n_actions
+
+    # ── collect one rollout (greedy, no exploration) ─────────────────────────
+    with set_exploration_type(ExplorationType.DETERMINISTIC):
+        td = env.rollout(
+            max_steps=env.max_steps,
+            policy=qnet,
+            auto_reset=True,
+            tensordict=None,
+        )
+
+    num_episodes = td.batch_size[0]
+    max_steps    = env.max_steps
+
+    obs      = td.get(("agents", "observation"))           # [E, T, n_agents, obs_dim]
+    flat_obs = obs.reshape(-1, n_agents, obs.shape[-1])    # [E*T, n_agents, obs_dim]
+
+    input_td = TensorDict(
+        {"agents": {"observation": flat_obs}},
+        batch_size=[flat_obs.shape[0]],
+        device=device,
+    )
+
+    # Forward pass → action_value shape: [E*T, n_agents, n_actions]
+    out_td      = qnet(input_td)
+    action_vals = out_td.get(("agents", "action_value"))   # [E*T, n_agents, n_actions]
+
+    # Softmax over actions to get a differentiable policy proxy
+    probs = torch.softmax(action_vals / temperature, dim=-1)
+    probs = probs.reshape(num_episodes, max_steps, n_agents, n_actions)
+
+    avg_pi = probs.mean(dim=(0, 1))   # [n_agents, n_actions]
+
+    payoff = env._payoff.to(device)
+
+    u    = torch.zeros(n_agents, device=device)
+    u[0] = torch.einsum("a,ab,b->", avg_pi[0], payoff[0], avg_pi[1])
+    u[1] = torch.einsum("a,ab,b->", avg_pi[0], payoff[1], avg_pi[1])
+
+    br_0 = (payoff[0] @ avg_pi[1]).max()
+    br_1 = (avg_pi[0] @ payoff[1]).max()
+
+    nash_conv = (br_0 - u[0] + br_1 - u[1]).item()
+
+    return nash_conv, avg_pi.clone().cpu()

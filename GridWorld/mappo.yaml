@@ -1,5 +1,5 @@
 seed: 0
-experiment_name: "Five_NSCoop"
+experiment_name: "NewNSCoop"
 sub_exp: "MAPPO"
 
 train:
