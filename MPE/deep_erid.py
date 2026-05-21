@@ -36,11 +36,7 @@ def rendering_callback(env, td):
     env.frames.append(env.render(mode="rgb_array", agent_index_focus=None))
 
 
-def make_env(scenario_name: str, seed: int, **scenario_kwargs) -> TransformedEnv:
-    """
-    Factory for a single PettingZoo MPE environment with cumulative reward tracking.
-    Called once per SerialEnv worker.
-    """
+def make_env(scenario_name: str, seed: int, device: str = "cpu", **scenario_kwargs) -> TransformedEnv:
     base = PettingZooEnv(
         task=scenario_name,
         parallel=True,
@@ -48,13 +44,19 @@ def make_env(scenario_name: str, seed: int, **scenario_kwargs) -> TransformedEnv
         continuous_actions=False,
         **scenario_kwargs,
     )
-    return TransformedEnv(
+    
+    # Important: move the base env to the target device
+    if device != "cpu":
+        base = base.to(device)  # or base.to(torch.device(device))
+    
+    env = TransformedEnv(
         base,
         RewardSum(
             in_keys=[REWARD_KEY],
             out_keys=[("agent", "episode_reward")],
         ),
     )
+    return env
 
 
 def evaluate_policy(env_test, policy, max_steps):
@@ -117,14 +119,13 @@ def train(cfg: DictConfig):
         f"n_agents={n_agents} | obs_dim={obs_dim} | action_dim={action_dim}"
     )
 
-    # ── environments ──────────────────────────────────────────────────────────
-    def env_fn():
-        return make_env(cfg.env.scenario_name, cfg.seed, **cfg.env.scenario)
+    device = cfg.train.device
 
-    env      = SerialEnv(cfg.env.num_envs, env_fn)
-    # Single env for evaluation — avoids SerialEnv lazy worker init
-    # which hangs when reset() is first called mid-run.
-    env_test = make_env(cfg.env.scenario_name, cfg.seed, **cfg.env.scenario)
+    def env_fn():
+        return make_env(cfg.env.scenario_name, cfg.seed,  device=device, **cfg.env.scenario)
+
+    env = SerialEnv(cfg.env.num_envs, env_fn, device=device)
+    env_test = SerialEnv(cfg.env.num_envs, env_fn, device=device)
 
     # ── policy ────────────────────────────────────────────────────────────────
     policy_net = nn.Sequential(

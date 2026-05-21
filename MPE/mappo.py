@@ -36,28 +36,27 @@ def rendering_callback(env, td):
     env.frames.append(env.render(mode="rgb_array", agent_index_focus=None))
 
 
-def make_env(scenario_name: str, seed: int, **scenario_kwargs) -> TransformedEnv:
-    """
-    Factory that creates a single PettingZoo MPE environment and wraps it
-    with cumulative episode-reward tracking.
-
-    SerialEnv calls this function once per worker, so every copy gets its
-    own Python object (no shared state).
-    """
+def make_env(scenario_name: str, seed: int, device: str = "cpu", **scenario_kwargs) -> TransformedEnv:
     base = PettingZooEnv(
         task=scenario_name,
-        parallel=True,           # use the parallel (simultaneous-action) API
+        parallel=True,
         seed=seed,
         continuous_actions=False,
         **scenario_kwargs,
     )
-    return TransformedEnv(
+    
+    # Important: move the base env to the target device
+    if device != "cpu":
+        base = base.to(device)  # or base.to(torch.device(device))
+    
+    env = TransformedEnv(
         base,
         RewardSum(
             in_keys=[REWARD_KEY],
             out_keys=[("agent", "episode_reward")],
         ),
     )
+    return env
 
 
 def evaluate_policy(env_test, policy, max_steps):
@@ -127,11 +126,13 @@ def train(cfg: DictConfig):
 
     # Vectorise: SerialEnv stacks num_envs copies end-to-end.
     # Use ParallelEnv instead if you want true multiprocessing.
-    def env_fn():
-        return make_env(cfg.env.scenario_name, cfg.seed, **cfg.env.scenario)
+    device = cfg.train.device
 
-    env = SerialEnv(cfg.env.num_envs, env_fn)
-    env_test = SerialEnv(cfg.env.num_envs, env_fn)
+    def env_fn():
+        return make_env(cfg.env.scenario_name, cfg.seed,  device=device, **cfg.env.scenario)
+
+    env = SerialEnv(cfg.env.num_envs, env_fn, device=device)
+    env_test = SerialEnv(cfg.env.num_envs, env_fn, device=device)
 
     # ── policy ────────────────────────────────────────────────────────────────
     policy_net = nn.Sequential(
