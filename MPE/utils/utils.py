@@ -1,5 +1,7 @@
+import torch
 from tensordict import unravel_key
 from torchrl.envs import Transform
+from torchrl.envs.utils import set_exploration_type, ExplorationType
 
 
 def swap_last(source, dest):
@@ -47,8 +49,8 @@ def evaluate_policy(env_test, policy):
         #episode_rewards = td.get(("agents", "episode_reward")).sum(-1)
         #mean_episode_reward = episode_rewards.mean().item()
 
-        done = td.get(("agents", "done"))
-        final_rewards = td.get(("agents", "episode_reward"))[done]
+        done = td.get(("agent", "done"))
+        final_rewards = td.get(("agent", "episode_reward"))[done]
         mean_episode_reward = final_rewards.mean().item()
 
     policy.train()

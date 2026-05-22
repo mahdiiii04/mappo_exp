@@ -11,14 +11,14 @@ env:
   max_steps: 100
   scenario_name: "simple_spread_v3"
   device: ???
-  num_envs: ??
+  num_envs: 8
 
 model:
   shared_params: False
   centralised_critic: True
 
 collector:
-  frames_per_batch: 5_000
+  frames_per_batch: 8_192
   n_iters: 500
   total_frames: ???
 
@@ -35,4 +35,3 @@ eval:
   frequency: 10
 
 logger:
-  

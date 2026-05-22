@@ -31,9 +31,15 @@ def train(cfg: DictConfig):
 
     torch.manual_seed(cfg.seed)
 
-    cfg.env.num_envs = cfg.collector.frames_per_batch // cfg.env.max_steps
+    cfg.env.num_envs = min(cfg.collector.frames_per_batch // cfg.env.max_steps, 8)
     cfg.collector.total_frames = cfg.collector.frames_per_batch * cfg.collector.n_iters
     cfg.buffer.memory_size = cfg.collector.frames_per_batch
+
+    assert cfg.train.minibatch_size < cfg.collector.frames_per_batch, (
+        f"minibatch_size ({cfg.train.minibatch_size}) must be smaller than "
+        f"frames_per_batch ({cfg.collector.frames_per_batch}), otherwise the "
+        f"training loop runs 0 times and torch.stack crashes on an empty list."
+    )
 
     log_dir = os.path.join("tb_logs", f"{cfg.env.scenario_name}-seed-{cfg.seed}")
     writer = SummaryWriter(log_dir=log_dir)
@@ -166,7 +172,7 @@ def train(cfg: DictConfig):
             loss_module.value_estimator(
                 tensordict_data,
                 params=loss_module.critic_network_params,
-                target_params=loss_module.target_critic_network_params,  # later scith to None 
+                target_params=None,
             )
 
         current_frames = tensordict_data.numel()
