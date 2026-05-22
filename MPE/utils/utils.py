@@ -28,3 +28,28 @@ class DoneTransform(Transform):
             )
 
         return tensordict
+
+def rendering_callback(env, td):
+    env.frames.append(env.render(mode="rgb_array", agent_index_focus=None))
+
+def evaluate_policy(env_test, policy):
+    policy.eval()
+
+    with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
+        td = env_test.rollout(
+            max_steps=env_test.max_steps,
+            policy=policy,
+            auto_reset=True,
+            break_when_any_done=False,
+            tensordict=env_test.reset(),
+        )
+
+        #episode_rewards = td.get(("agents", "episode_reward")).sum(-1)
+        #mean_episode_reward = episode_rewards.mean().item()
+
+        done = td.get(("agents", "done"))
+        final_rewards = td.get(("agents", "episode_reward"))[done]
+        mean_episode_reward = final_rewards.mean().item()
+
+    policy.train()
+    return mean_episode_reward

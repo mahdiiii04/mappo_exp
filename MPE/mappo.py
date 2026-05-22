@@ -10,135 +10,71 @@ from torchrl.collectors import Collector
 from torchrl.data import TensorDictReplayBuffer
 from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
 from torchrl.data.replay_buffers.storages import LazyTensorStorage
-from torchrl.envs import RewardSum, TransformedEnv, SerialEnv
-from torchrl.envs.libs.pettingzoo import PettingZooEnv  # replaces VmasEnv
-from torchrl.envs.utils import ExplorationType, set_exploration_type
+from torchrl.envs import RewardSum, TransformedEnv
+from torchrl.envs.libs.pettingzoo import PettingZooEnv
+from torchrl.envs import ParallelEnv
 from torchrl.modules import ProbabilisticActor, ValueOperator
 from torchrl.modules.models.multiagent import MultiAgentMLP
 from torchrl.objectives import ClipPPOLoss, ValueEstimators
 
 from torch.utils.tensorboard import SummaryWriter
 
-import hydra
-from hydra.utils import get_original_cwd
 from omegaconf import DictConfig
 
-from utils.utils import DoneTransform
-
-# ── MPE key constants ────────────────────────────────────────────────────────
-# PettingZooEnv uses these keys; define them once so they stay consistent
-# with whatever the wrapped env reports at runtime.
-REWARD_KEY = ("agent", "reward")
-DONE_KEYS  = [("agent", "done"), ("agent", "terminated")]
-
-
-def rendering_callback(env, td):
-    env.frames.append(env.render(mode="rgb_array", agent_index_focus=None))
-
-
-def make_env(scenario_name: str, seed: int, device: str = "cpu", **scenario_kwargs) -> TransformedEnv:
-    base = PettingZooEnv(
-        task=scenario_name,
-        parallel=True,
-        seed=seed,
-        continuous_actions=False,
-        **scenario_kwargs,
-    )
-    
-    # Important: move the base env to the target device
-    if device != "cpu":
-        base = base.to(device)  # or base.to(torch.device(device))
-    
-    env = TransformedEnv(
-        base,
-        RewardSum(
-            in_keys=[REWARD_KEY],
-            out_keys=[("agent", "episode_reward")],
-        ),
-    )
-    return env
-
-
-def evaluate_policy(env_test, policy, max_steps):
-    policy.eval()
-
-    with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
-        td = env_test.rollout(
-            max_steps=max_steps,
-            policy=policy,
-            auto_reset=True,
-            break_when_any_done=False,
-            tensordict=env_test.reset(),
-        )
-
-        done = td.get(("agent", "done"))
-        final_rewards = td.get(("agent", "episode_reward"))[done]
-        if final_rewards.numel() > 0:
-            mean_episode_reward = final_rewards.mean().item()
-        else:
-            mean_episode_reward = td.get(("agent", "episode_reward")).mean().item()
-
-    policy.train()
-    return mean_episode_reward
-
+from utils.utils import evaluate_policy
 
 @hydra.main(version_base="1.1", config_path="", config_name="mappo")
 def train(cfg: DictConfig):
-    # ── device ────────────────────────────────────────────────────────────────
+
     cfg.train.device = "cpu" if not torch.cuda.is_available() else "cuda:0"
     cfg.env.device = cfg.train.device
 
     torch.manual_seed(cfg.seed)
 
-    # ── frame / buffer accounting ────────────────────────────────────────────
     cfg.env.num_envs = cfg.collector.frames_per_batch // cfg.env.max_steps
     cfg.collector.total_frames = cfg.collector.frames_per_batch * cfg.collector.n_iters
     cfg.buffer.memory_size = cfg.collector.frames_per_batch
 
-    # ── logging ───────────────────────────────────────────────────────────────
-    log_dir = os.path.join(get_original_cwd(), "tb_logs", f"{cfg.env.scenario_name}-seed-{cfg.seed}")
-    os.makedirs(log_dir, exist_ok=True)
+    log_dir = os.path.join("tb_logs", f"{cfg.env.scenario_name}-seed-{cfg.seed}")
     writer = SummaryWriter(log_dir=log_dir)
     torchrl_logger.info(f"Tensorboard logging to: {log_dir}")
 
-    # ── environments ──────────────────────────────────────────────────────────
-    # Build one env first to read observation / action dims and n_agents.
-    # PettingZooEnv wraps aec_to_parallel_wrapper, which doesn't expose
-    # .n_agents directly — even through TransformedEnv's attribute forwarding.
-    # Instead, derive everything from the TorchRL specs:
-    #   • PettingZooEnv(parallel=True) sets batch_size = (n_agents,)
-    #   • observation_spec shape[-1] is the per-agent obs dimension
-    #   • action_spec["agent","action"].space.n is the number of discrete actions
-    _probe = make_env(cfg.env.scenario_name, cfg.seed, **cfg.env.scenario)
-    # batch_size is () for PettingZooEnv — agent count sits in the obs spec shape.
-    # observation shape is (n_agents, obs_dim), so index 0 = n_agents, -1 = obs_dim.
-    obs_shape  = _probe.observation_spec["agent", "observation"].shape
-    n_agents   = obs_shape[0]
-    obs_dim    = obs_shape[-1]
-    action_key = ("agent", "action")
-    action_dim = _probe.action_spec[action_key].space.n   # DiscreteTensorSpec.space.n
-    _probe.close()
-
-    torchrl_logger.info(
-        f"MPE env: {cfg.env.scenario_name} | "
-        f"n_agents={n_agents} | obs_dim={obs_dim} | action_dim={action_dim}"
+    def make_env():
+        return PettingZooEnv(
+            task=cfg.env.scenario_name,
+            parallel=True,
+            continuous_actions=False,
+            seed=cfg.seed,
+            max_cycles=cfg.env.max_steps,
+            device=cfg.env.device,
+        )
+    
+    env = ParallelEnv(
+        num_workers=cfg.env.num_envs,
+        create_env_fn=make_env,
     )
 
-    # Vectorise: SerialEnv stacks num_envs copies end-to-end.
-    # Use ParallelEnv instead if you want true multiprocessing.
-    device = cfg.train.device
+    env = TransformedEnv(
+        env,
+        RewardSum(in_keys=[env.reward_key], out_keys=[("agent", "episode_reward")])
+    )
 
-    def env_fn():
-        return make_env(cfg.env.scenario_name, cfg.seed,  device=device, **cfg.env.scenario)
+    env_test = ParallelEnv(
+        num_workers=cfg.env.num_envs,
+        create_env_fn=make_env,
+    )
 
-    env = SerialEnv(cfg.env.num_envs, env_fn, device=device)
-    env_test = SerialEnv(cfg.env.num_envs, env_fn, device=device)
+    env_test = TransformedEnv(
+        env_test,
+        RewardSum(in_keys=[env.reward_key], out_keys=[("agent", "episode_reward")])
+    )
 
-    # ── policy ────────────────────────────────────────────────────────────────
+    n_agents = env.full_action_spec_unbatched[env.action_key].shape[0]
+
     policy_net = nn.Sequential(
         MultiAgentMLP(
-            n_agent_inputs=obs_dim,
-            n_agent_outputs=action_dim,
+            n_agent_inputs=env.observation_spec["agent", "observation"].shape[-1],
+            n_agent_outputs=env.full_action_spec_unbatched[env.action_key].space.n,
             n_agents=n_agents,
             centralized=False,
             share_params=cfg.model.shared_params,
@@ -157,16 +93,15 @@ def train(cfg: DictConfig):
 
     policy = ProbabilisticActor(
         policy_module,
-        spec=env.action_spec,  # PettingZooEnv uses action_spec; no full_action_spec_unbatched
+        spec=env.full_action_spec_unbatched,
         in_keys=[("agent", "logits")],
-        out_keys=[action_key],
+        out_keys=[env.action_key],
         distribution_class=torch.distributions.Categorical,
         return_log_prob=True,
     )
 
-    # ── critic ────────────────────────────────────────────────────────────────
     critic_module = MultiAgentMLP(
-        n_agent_inputs=obs_dim,
+        n_agent_inputs=env.observation_spec[("agent", "observation")].shape[-1],
         n_agent_outputs=1,
         n_agents=n_agents,
         centralized=cfg.model.centralised_critic,
@@ -182,7 +117,6 @@ def train(cfg: DictConfig):
         in_keys=[("agent", "observation")],
     )
 
-    # ── collector ─────────────────────────────────────────────────────────────
     collector = Collector(
         env,
         policy,
@@ -190,7 +124,6 @@ def train(cfg: DictConfig):
         storing_device=cfg.train.device,
         frames_per_batch=cfg.collector.frames_per_batch,
         total_frames=cfg.collector.total_frames,
-        postproc=DoneTransform(reward_key=REWARD_KEY, done_keys=DONE_KEYS),
     )
 
     replay_buffer = TensorDictReplayBuffer(
@@ -199,7 +132,6 @@ def train(cfg: DictConfig):
         batch_size=cfg.train.minibatch_size,
     )
 
-    # ── PPO loss ──────────────────────────────────────────────────────────────
     loss_module = ClipPPOLoss(
         actor_network=policy,
         critic_network=critic,
@@ -209,8 +141,8 @@ def train(cfg: DictConfig):
     )
 
     loss_module.set_keys(
-        reward=REWARD_KEY,
-        action=action_key,
+        reward=env.reward_key,
+        action=env.action_key,
         done=("agent", "done"),
         terminated=("agent", "terminated"),
     )
@@ -221,10 +153,10 @@ def train(cfg: DictConfig):
 
     optim = torch.optim.Adam(params=loss_module.parameters(), lr=cfg.train.lr)
 
-    # ── training loop ─────────────────────────────────────────────────────────
     total_time = 0
     total_frames = 0
     sampling_start = time.time()
+
     eval_freq = cfg.eval.frequency
 
     for i, tensordict_data in enumerate(collector):
@@ -234,7 +166,7 @@ def train(cfg: DictConfig):
             loss_module.value_estimator(
                 tensordict_data,
                 params=loss_module.critic_network_params,
-                target_params=loss_module.target_critic_network_params,
+                target_params=loss_module.target_critic_network_params,  # later scith to None 
             )
 
         current_frames = tensordict_data.numel()
@@ -251,10 +183,9 @@ def train(cfg: DictConfig):
                 training_tds.append(loss_vals.detach())
 
                 loss_value = (
-                    loss_vals["loss_objective"]
-                    + loss_vals["loss_critic"]
-                    + loss_vals["loss_entropy"]
+                    loss_vals["loss_objective"] + loss_vals["loss_critic"] + loss_vals["loss_entropy"]
                 )
+
                 loss_value.backward()
 
                 total_norm = torch.nn.utils.clip_grad_norm_(
@@ -268,36 +199,36 @@ def train(cfg: DictConfig):
         collector.update_policy_weights_()
 
         training_time = time.time() - training_start
+
         iteration_time = sampling_time + training_time
         total_time += iteration_time
         training_tds = torch.stack(training_tds)
 
-        # ── logging ───────────────────────────────────────────────────────────
         done = tensordict_data.get(("agent", "done"))
         final_rewards = tensordict_data.get(("agent", "episode_reward"))[done]
-        if final_rewards.numel() > 0:
-            mean_episode_reward = final_rewards.mean().item()
-        else:
-            mean_episode_reward = tensordict_data.get(("agent", "episode_reward")).mean().item()
+        mean_episode_reward = final_rewards.mean().item()
 
         avg_loss_objective = training_tds["loss_objective"].mean().item()
-        avg_loss_critic    = training_tds["loss_critic"].mean().item()
-        avg_loss_entropy   = training_tds["loss_entropy"].mean().item()
-        avg_grad_norm      = training_tds["grad_norm"].mean().item()
+        avg_loss_critic = training_tds["loss_critic"].mean().item()
+        avg_loss_entropy = training_tds["loss_entropy"].mean().item()
+        avg_grad_norm = training_tds["grad_norm"].mean().item()
 
         global_step = total_frames
 
         writer.add_scalar("Reward/mean_episode_reward", mean_episode_reward, global_step)
+
         writer.add_scalar("Loss/objective", avg_loss_objective, global_step)
-        writer.add_scalar("Loss/critic",    avg_loss_critic,    global_step)
-        writer.add_scalar("Loss/entropy",   avg_loss_entropy,   global_step)
-        writer.add_scalar("Loss/total",
-            avg_loss_objective + avg_loss_critic + avg_loss_entropy, global_step)
+        writer.add_scalar("Loss/critic", avg_loss_critic, global_step)
+        writer.add_scalar("Loss/entropy", avg_loss_entropy, global_step)
+        writer.add_scalar("Loss/total", avg_loss_objective + avg_loss_critic + avg_loss_entropy, global_step)
+
         writer.add_scalar("Grad/grad_norm", avg_grad_norm, global_step)
-        writer.add_scalar("Time/sampling_time",  sampling_time,  global_step)
-        writer.add_scalar("Time/training_time",  training_time,  global_step)
+        
+        writer.add_scalar("Time/sampling_time", sampling_time, global_step)
+        writer.add_scalar("Time/training_time", training_time, global_step)
         writer.add_scalar("Time/iteration_time", iteration_time, global_step)
-        writer.add_scalar("Frames/total_frames", total_frames,   global_step)
+
+        writer.add_scalar("Frames/total_frames", total_frames, global_step)
 
         torchrl_logger.info(
             f"Iter {i} | "
@@ -308,11 +239,16 @@ def train(cfg: DictConfig):
         )
 
         if i % eval_freq == 0 or i == cfg.collector.n_iters - 1:
-            eval_reward = evaluate_policy(env_test=env_test, policy=policy, max_steps=cfg.env.max_steps)
-            writer.add_scalar("Eval/mean_episode_reward", eval_reward, total_frames)
-            torchrl_logger.info(f"Evaluation Reward: {eval_reward:.3f}")
+            eval_reward = evaluate_policy(
+                env_test=env_test,
+                policy=policy
+            )
 
-        sampling_start = time.time()
+            writer.add_scalar("Eval/mean_episode_reward", eval_reward, total_frames)
+
+            torchrl_logger.info(
+                f"Evaluation Reward: {eval_reward:.3f}"
+            )
 
     writer.close()
     collector.shutdown()
@@ -320,7 +256,6 @@ def train(cfg: DictConfig):
         env.close()
     if not env_test.is_closed:
         env_test.close()
-
 
 if __name__ == "__main__":
     train()
