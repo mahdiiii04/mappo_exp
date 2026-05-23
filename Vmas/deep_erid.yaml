@@ -13,7 +13,7 @@ train:
 
 env:
   max_steps: 100
-  scenario_name: "balance"
+  scenario_name: "simple_spread"
   scenario: 
     n_agents: 3
   device: ???

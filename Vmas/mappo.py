@@ -138,7 +138,7 @@ def train(cfg: DictConfig):
         share_params=cfg.model.shared_params,
         device=cfg.train.device,
         depth=2,
-        num_cells=256,
+        num_cells=128,
         activation_class=nn.Tanh,
     )
 
