@@ -1,0 +1,56 @@
+seed: 0
+experiment_name: "Balance"
+sub_exp: "DeepERID"
+
+train:
+  num_epochs: 30
+  minibatch_size: 4096
+  actor_lr: 1e-4
+  critic_lr: 1e-3
+  max_grad_norm: 40.0
+  device: ???
+  tau: 0.005
+
+env:
+  max_steps: 100
+  # scenario_name is no longer used — the custom class is loaded directly
+  scenario:
+    n_agents: 3
+    # Bonus reward an agent receives for covering its preferred landmark
+    pref_bonus: 1.5
+    # Radius within which an agent is considered to "cover" a landmark
+    coverage_radius: 0.15
+    # Penalty applied to each pair of colliding agents
+    collision_penalty: 1.0
+    # Steps between random preference reassignments. null = fixed for entire run.
+    pref_switch_interval: 2000
+  device: ???
+  num_envs: ??
+
+model:
+  shared_params: False
+  centralised_critic: True
+
+collector:
+  frames_per_batch: 60_000
+  n_iters: 500
+  total_frames: ???
+
+buffer:
+  memory_size: ???
+
+loss:
+  entropy_eps: 0.01
+  alpha: 0.5
+  gamma: 0.9
+  reward_scale: 1.0
+
+eval:
+  frequency: 10
+
+logger: {}
+
+hydra:
+  run:
+    dir: ./outputs/${experiment_name}
+  output_subdir: .hydra

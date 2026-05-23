@@ -12,6 +12,8 @@ env:
   scenario_name: "simple_spread"
   scenario:
     n_agents: 3
+    pref_switch_interval: 2000
+    pref_bonus: 1.5
   device: ???
   num_envs: ??
 
