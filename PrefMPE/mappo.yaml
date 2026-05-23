@@ -1,0 +1,49 @@
+seed: 0
+
+train:
+  num_epochs: 30
+  minibatch_size: 4096
+  lr: 5e-4
+  max_grad_norm: 40.0
+  device: ???
+
+env:
+  max_steps: 100
+  # scenario_name is no longer used — the custom class is loaded directly
+  scenario:
+    n_agents: 3
+    # Bonus reward an agent receives for covering its preferred landmark
+    pref_bonus: 1.5
+    # Radius within which an agent is considered to "cover" a landmark
+    coverage_radius: 0.15
+    # Penalty applied to each pair of colliding agents
+    collision_penalty: 1.0
+    # How many env steps between random preference reassignments.
+    # Set to null to keep preferences fixed for the entire training run.
+    # Steps between preference reshuffles — required, controls how often agents must re-adapt
+    pref_switch_interval: 200
+  device: ???
+  num_envs: ??
+
+model:
+  shared_params: False
+  centralised_critic: True
+
+collector:
+  frames_per_batch: 60_000
+  n_iters: 500
+  total_frames: ???
+
+buffer:
+  memory_size: ???
+
+loss:
+  gamma: 0.99
+  lmbda: 0.9
+  entropy_eps: 0.01
+  clip_epsilon: 0.2
+
+eval:
+  frequency: 10
+
+logger:
