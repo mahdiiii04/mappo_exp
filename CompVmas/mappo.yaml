@@ -1,0 +1,43 @@
+seed: 0
+
+train:
+  num_epochs: 30
+  minibatch_size: 4096
+  lr: 5e-4
+  max_grad_norm: 40.0
+  device: ???
+
+env:
+  max_steps: 100
+  # Switch between "simple_spread" (homogeneous) and "simple_adversary"
+  # (heterogeneous: groups "adversary" + "agent") — no other changes needed.
+  scenario_name: "simple_adversary"
+  scenario: {}
+    # simple_adversary uses its own fixed agent counts; no extra params needed.
+    # Add scenario-specific overrides here if required, e.g.:
+    # num_adversaries: 1
+  device: ???
+  num_envs: ??
+
+model:
+  shared_params: False
+  centralised_critic: True
+
+collector:
+  frames_per_batch: 60_000
+  n_iters: 500
+  total_frames: ???
+
+buffer:
+  memory_size: ???
+
+loss:
+  gamma: 0.99
+  lmbda: 0.9
+  entropy_eps: 0.01
+  clip_epsilon: 0.2
+
+eval:
+  frequency: 10
+
+logger:
