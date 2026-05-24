@@ -11,7 +11,7 @@ train:
   tau: 0.005
 env:
   max_steps: 100
-  scenario_name: simple_spread
+  scenario_name: simple_adversary
   scenario:
     n_agents: 3
   device: ???

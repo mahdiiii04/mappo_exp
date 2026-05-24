@@ -1,6 +1,5 @@
 import time
 import os
-
 import hydra
 import torch
 from tensordict.nn import TensorDictModule, TensorDictSequential
@@ -132,8 +131,15 @@ def build_critic(group, env, cfg):
     )
 
 
-def build_loss(group, policy, critic, cfg):
-    """DeepERID loss wired to the correct per-group keys."""
+def build_loss(group, n_agents, policy, critic, cfg):
+    """DeepERID loss wired to the correct per-group keys.
+
+    Also patches the forward pass to guarantee the action tensor always has
+    shape (batch, n_agents) before derid's loss_critic runs gather() on it.
+    Without the patch, a 1-agent group produces action shape (batch,) after
+    derid's squeeze(-1), making unsqueeze(-1) yield a 2-D tensor that cannot
+    be gathered against the 3-D q_vals tensor.
+    """
     loss = DeepERIDLoss(
         actor_network=policy,
         critic_network=critic,
@@ -148,6 +154,43 @@ def build_loss(group, policy, critic, cfg):
         terminated=(group, "terminated"),
         sample_log_prob=(group, "action_log_prob"),
     )
+
+    # --- action-shape guard patched onto loss_critic directly.
+    # Patching forward() doesn't work: torchrl's @dispatch decorator unwraps
+    # the tensordict and calls the real forward(), bypassing any tensordict
+    # we modified there.  loss_critic() is called after dispatch resolves,
+    # so patching it is reliable.
+    _orig_loss_critic = loss.loss_critic
+
+    def _safe_loss_critic(tensordict):
+        # derid.py line 246-248 does:
+        #   if action.ndim > 1: action = action.squeeze(-1)
+        #   q_selected = q_vals.gather(-1, action.unsqueeze(-1))
+        # q_vals is always 3-D: (batch, n_agents, n_actions).
+        # gather needs the index to also be 3-D: (batch, n_agents, 1).
+        # For a 1-agent group action arrives as (batch, 1):
+        #   squeeze(-1) → (batch,)  [ndim=1]
+        #   unsqueeze(-1) → (batch, 1)  [ndim=2]  ← mismatch with 3-D q_vals
+        # Fix: unsqueeze action to (batch, n_agents, 1) BEFORE derid's squeeze,
+        # so derid's squeeze(-1) removes our trailing 1 → (batch, n_agents),
+        # and then its unsqueeze(-1) restores → (batch, n_agents, 1) correctly.
+        action_key = loss.tensor_keys.action
+        action = tensordict.get(action_key)
+        if action.ndim == 2:
+            # (batch, n_agents) → (batch, n_agents, 1) so squeeze(-1) is safe
+            action = action.unsqueeze(-1)
+        elif action.ndim == 1:
+            # (batch,) → (batch, 1, 1)
+            action = action.unsqueeze(-1).unsqueeze(-1)
+        # Now action is (batch, n_agents, 1): derid squeeze(-1)→(batch, n_agents)
+        # then unsqueeze(-1)→(batch, n_agents, 1) matching 3-D q_vals.
+        td = tensordict.copy()
+        td.set(action_key, action)
+        return _orig_loss_critic(td)
+
+    loss.loss_critic = _safe_loss_critic
+    # ---
+
     return loss
 
 
@@ -211,7 +254,10 @@ def train(cfg: DictConfig):
     # -----------------------------------------------------------------------
     policies     = {g: build_policy(g, env, cfg) for g in groups}
     critics      = {g: build_critic(g, env, cfg) for g in groups}
-    loss_modules = {g: build_loss(g, policies[g], critics[g], cfg) for g in groups}
+    loss_modules = {
+        g: build_loss(g, len(env.group_map[g]), policies[g], critics[g], cfg)
+        for g in groups
+    }
 
     # Single policy seen by the collector: runs each group's actor in sequence
     combined_policy = TensorDictSequential(*[policies[g] for g in groups])
@@ -320,7 +366,7 @@ def train(cfg: DictConfig):
         # -------------------------------------------------------------------
         # Logging — per group
         # -------------------------------------------------------------------
-        for group, loss_module in loss_modules.items():
+        for group in groups:
             tds  = torch.stack(training_tds[group])
             done = tensordict_data.get((group, "done"))
             final_rewards = tensordict_data.get((group, "episode_reward"))[done]
@@ -328,7 +374,7 @@ def train(cfg: DictConfig):
                 final_rewards.mean().item() if final_rewards.numel() > 0 else 0.0
             )
 
-            writer.add_scalar(f"Reward/{group}/mean_episode_reward", mean_ep_reward,              global_step)
+            writer.add_scalar(f"Reward/{group}/mean_episode_reward", mean_ep_reward,                    global_step)
             writer.add_scalar(f"Loss/{group}/objective",             tds["loss_objective"].mean().item(), global_step)
             writer.add_scalar(f"Loss/{group}/critic",                tds["loss_critic"].mean().item(),    global_step)
             writer.add_scalar(f"Loss/{group}/entropy",               tds["loss_entropy"].mean().item(),   global_step)
